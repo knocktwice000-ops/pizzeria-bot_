@@ -423,25 +423,25 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def comando_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Comando /menu directo"""
-    query = update.callback_query if update.callback_query else None
-    
-    if query:
-        await query.answer()
-        data = 'menu_categorias'
-    else:
-        # Crear un objeto query simulado
-        class MockQuery:
-            def __init__(self, message):
-                self.edit_message_text = message.reply_text
-                self.from_user = message.from_user
-                self.answer = lambda: None
-                self.data = 'menu_categorias'
-        
-        query = MockQuery(update.message)
-        data = 'menu_categorias'
-    
-    # Redirigir al handler de botones
-    await button_handler(update, context)
+    await update.message.reply_text(
+        "🍽️ *ACCEDIENDO AL MENÚ...*",
+        parse_mode='Markdown'
+    )
+    # Redirigir al menú de categorías
+    keyboard = [
+        [InlineKeyboardButton("🍕 PIZZAS", callback_data='cat_pizzas')],
+        [InlineKeyboardButton("🍔 BURGERS", callback_data='cat_burgers')],
+        [InlineKeyboardButton("🍰 POSTRES", callback_data='cat_postres')],
+        [InlineKeyboardButton("🛒 TRAMITAR PEDIDO", callback_data='ver_carrito')],
+        [InlineKeyboardButton("❓ FAQ", callback_data='faq_menu')],
+        [InlineKeyboardButton("🔙 Inicio", callback_data='inicio')]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(
+        "📂 *SELECCIONA CATEGORÍA:*", 
+        reply_markup=reply_markup,
+        parse_mode='Markdown'
+    )
 
 async def comando_faq(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Comando /faq para preguntas frecuentes"""
@@ -459,23 +459,43 @@ async def comando_faq(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def comando_pedido(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Comando /pedido para ver el carrito"""
-    query = update.callback_query if update.callback_query else None
-    
-    if query:
-        data = 'ver_carrito'
+    carrito = context.user_data.get('carrito', [])
+    if not carrito:
+        texto = "🛒 *TU CESTA ESTÁ VACÍA*"
+        keyboard = [[InlineKeyboardButton("🍽️ Ir a la Carta", callback_data='menu_categorias')]]
+        await update.message.reply_text(
+            texto, 
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='Markdown'
+        )
     else:
-        class MockQuery:
-            def __init__(self, message):
-                self.edit_message_text = message.reply_text
-                self.from_user = message.from_user
-                self.answer = lambda: None
-                self.data = 'ver_carrito'
+        total = sum(p['precio'] for p in carrito)
+        texto = "📝 *TU PEDIDO:*\n\n"
         
-        query = MockQuery(update.message)
-        update.callback_query = query
-        data = 'ver_carrito'
-    
-    await button_handler(update, context)
+        conteo = {}
+        for item in carrito:
+            nombre = item['nombre']
+            precio = item['precio']
+            if nombre in conteo: conteo[nombre]['cantidad'] += 1
+            else: conteo[nombre] = {'cantidad': 1, 'precio': precio}
+        
+        for nombre, info in conteo.items():
+            subtotal = info['cantidad'] * info['precio']
+            texto += f"▪️ {info['cantidad']}x {nombre} ... {subtotal}€\n"
+        
+        texto += f"\n💰 *TOTAL:* {total}€\n\n"
+        texto += "👇 Para terminar, necesitamos tu dirección."
+        keyboard = [
+            [InlineKeyboardButton("📍 PONER DIRECCIÓN", callback_data='pedir_direccion_flow')],
+            [InlineKeyboardButton("🗑️ Borrar todo", callback_data='borrar_carrito')],
+            [InlineKeyboardButton("🔙 Seguir pidiendo", callback_data='menu_categorias')]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(
+            texto, 
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
 
 async def comando_ayuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Comando /ayuda con información útil"""
@@ -500,6 +520,43 @@ async def comando_ayuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     
     await update.message.reply_text(ayuda_text, parse_mode='Markdown')
+
+async def comando_valorar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Comando /valorar para valorar pedido"""
+    conn = get_db_connection()
+    c = conn.cursor()
+    
+    # Buscar último pedido del usuario sin valorar
+    c.execute('''SELECT id FROM pedidos 
+                 WHERE user_id = ? AND valoracion = 0 
+                 ORDER BY fecha DESC LIMIT 1''',
+              (update.effective_user.id,))
+    
+    pedido = c.fetchone()
+    conn.close()
+    
+    if pedido:
+        pedido_id = pedido['id']
+        keyboard = [
+            [InlineKeyboardButton("⭐", callback_data=f"valorar_{pedido_id}_1"),
+             InlineKeyboardButton("⭐⭐", callback_data=f"valorar_{pedido_id}_2"),
+             InlineKeyboardButton("⭐⭐⭐", callback_data=f"valorar_{pedido_id}_3"),
+             InlineKeyboardButton("⭐⭐⭐⭐", callback_data=f"valorar_{pedido_id}_4"),
+             InlineKeyboardButton("⭐⭐⭐⭐⭐", callback_data=f"valorar_{pedido_id}_5)]
+        ]
+        
+        await update.message.reply_text(
+            "⭐ *VALORA TU ÚLTIMO PEDIDO*\n\n"
+            "¿Cómo calificarías tu experiencia con Knock Twice?",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='Markdown'
+        )
+    else:
+        await update.message.reply_text(
+            "ℹ️ No encontramos pedidos pendientes de valorar.\n"
+            "¡Gracias por tu apoyo! 🤫",
+            parse_mode='Markdown'
+        )
 
 # --- 11. HANDLER DE BOTONES MEJORADO ---
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -560,7 +617,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(
                 "⭐ *VALORA TU ÚLTIMO PEDIDO*\n\n"
                 "¿Cómo calificarías tu experiencia con Knock Twice?",
-                reply_markup=InlineKeyboardMarkup(keyboard)
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode='Markdown'
             )
         else:
             await query.edit_message_text(
@@ -698,7 +756,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(mensaje_producto, reply_markup=reply_markup, parse_mode='Markdown')
         return
     
-    # --- NAVEGACIÓN ORIGINAL (modificada) ---
+    # --- NAVEGACIÓN PRINCIPAL ---
     if data == 'menu_categorias':
         keyboard = [
             [InlineKeyboardButton("🍕 PIZZAS", callback_data='cat_pizzas')],
@@ -722,8 +780,81 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(f"👇 *{info_cat['titulo']}*", reply_markup=reply_markup, parse_mode='Markdown')
     
-    # ... (resto del código original del button_handler se mantiene igual)
-    # Solo añadir la lógica de guardar pedido en la base de datos al confirmar
+    elif data.startswith('add_mult:'):
+        partes = data.split(':')
+        cantidad = int(partes[1])
+        id_prod = partes[2]
+        categoria = partes[3]
+        
+        producto = MENU_DATA[categoria]['productos'][id_prod]
+        
+        if 'carrito' not in context.user_data: 
+            context.user_data['carrito'] = []
+        for _ in range(cantidad):
+            context.user_data['carrito'].append(producto)
+        
+        keyboard = [
+            [InlineKeyboardButton("🔙 Seguir Pidiendo", callback_data=f'cat_{categoria}')],
+            [InlineKeyboardButton("🚀 CONTINUAR (Dirección)", callback_data='pedir_direccion_flow')]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(
+            f"✅ Añadidas **{cantidad} x {producto['nombre']}** a la cesta.", 
+            reply_markup=reply_markup, 
+            parse_mode='Markdown'
+        )
+    
+    elif data == 'ver_carrito':
+        carrito = context.user_data.get('carrito', [])
+        if not carrito:
+            texto = "🛒 *TU CESTA ESTÁ VACÍA*"
+            keyboard = [[InlineKeyboardButton("🍽️ Ir a la Carta", callback_data='menu_categorias')]]
+            await query.edit_message_text(
+                texto, 
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode='Markdown'
+            )
+        else:
+            total = sum(p['precio'] for p in carrito)
+            texto = "📝 *TU PEDIDO:*\n\n"
+            
+            conteo = {}
+            for item in carrito:
+                nombre = item['nombre']
+                precio = item['precio']
+                if nombre in conteo: conteo[nombre]['cantidad'] += 1
+                else: conteo[nombre] = {'cantidad': 1, 'precio': precio}
+            
+            for nombre, info in conteo.items():
+                subtotal = info['cantidad'] * info['precio']
+                texto += f"▪️ {info['cantidad']}x {nombre} ... {subtotal}€\n"
+            
+            texto += f"\n💰 *TOTAL:* {total}€\n\n"
+            texto += "👇 Para terminar, necesitamos tu dirección."
+            keyboard = [
+                [InlineKeyboardButton("📍 PONER DIRECCIÓN", callback_data='pedir_direccion_flow')],
+                [InlineKeyboardButton("🗑️ Borrar todo", callback_data='borrar_carrito')],
+                [InlineKeyboardButton("🔙 Seguir pidiendo", callback_data='menu_categorias')]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(texto, reply_markup=reply_markup, parse_mode='Markdown')
+    
+    elif data == 'pedir_direccion_flow':
+        context.user_data['esperando_direccion'] = True
+        msg = "📍 *PASO 1/2: DIRECCIÓN Y TELÉFONO*\n\nEscribe aquí abajo tu dirección completa y un teléfono.\n\n✍️ Escribe ahora..."
+        keyboard = [[InlineKeyboardButton("🔙 Volver al Carrito", callback_data='ver_carrito_cancelar_dir')]]
+        await query.edit_message_text(
+            msg, 
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='Markdown'
+        )
+    
+    elif data == 'ver_carrito_cancelar_dir':
+        context.user_data['esperando_direccion'] = False
+        await button_handler(update, context)
+    
+    elif data == 'mostrar_horas_flow':
+        await mostrar_horas_disponibles(update, context, es_edicion=True)
     
     elif data.startswith('sethora_'):
         # Verificar cooldown otra vez por seguridad
@@ -756,8 +887,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             conteo = {}
             for item in carrito:
-                if item['nombre'] in conteo: conteo[item['nombre']] += 1
-                else: conteo[item['nombre']] = 1
+                if item['nombre'] in conteo: 
+                    conteo[item['nombre']] += 1
+                else: 
+                    conteo[item['nombre']] = 1
                 total += item['precio']
             
             for nombre, cant in conteo.items():
@@ -784,8 +917,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             # Programar solicitud de valoración
             asyncio.create_task(pedir_valoracion(context, user_id_cliente, pedido_id))
-            
-            # ... resto del código para enviar mensaje al grupo ...
             
             mensaje_grupo = (
                 f"🚪 **NUEVO PEDIDO #{pedido_id}** 🚪\n"
@@ -827,88 +958,45 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.edit_message_text(f"❌ Error enviando: {e}")
         
         else:
-            await query.edit_message_text("❌ Esa hora acaba de ocuparse. Elige otra.", 
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Ver Horas", callback_data='mostrar_horas_flow')]]))
-
-    # ... resto del código original ...
-
-# --- 12. SERVIDOR Y ANTI-SLEEP (igual que antes) ---
-class HealthCheckHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Knock Twice Bot - v14 Mejorado")
-
-def start_fake_server():
-    port = int(os.environ.get("PORT", 8080))
-    server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
-    server.serve_forever()
-
-def mantener_despierto():
-    while True:
+            await query.edit_message_text(
+                "❌ Esa hora acaba de ocuparse. Elige otra.", 
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 Ver Horas", callback_data='mostrar_horas_flow')]
+                ])
+            )
+    
+    elif data.startswith('reparto_'):
+        cliente_id_destino = data.split('_')[1]
         try:
-            time.sleep(600)
-            requests.get(URL_RENDER)
-        except Exception:
-            pass
+            await context.bot.send_message(
+                chat_id=cliente_id_destino,
+                text="🛵 **¡KNOCK TWICE INFORMA!**\n\nTu pedido ha salido de cocina y está en camino.\nPrepárate, estamos llegando. 🔥"
+            )
+            await query.edit_message_reply_markup(
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("✅ CLIENTE AVISADO", callback_data="ignore")]
+                ])
+            )
+        except Exception as e:
+            await query.answer(f"Error al avisar: {e}", show_alert=True)
+    
+    elif data == 'borrar_carrito':
+        context.user_data['carrito'] = []
+        context.user_data['esperando_direccion'] = False
+        await query.edit_message_text(
+            "🗑️ Cesta vaciada.", 
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 Inicio", callback_data='inicio')]
+            ])
+        )
+    
+    elif data == 'inicio':
+        await start(update, context)
+    
+    elif data == 'ignore':
+        await query.answer("Acción no disponible")
 
-# --- 13. FUNCIÓN PRINCIPAL ---
-async def main():
-    # Inicializar base de datos
-    init_database()
-    
-    # Iniciar bot
-    token = os.environ.get("TELEGRAM_TOKEN", "TOKEN_FALSO")
-    application = ApplicationBuilder().token(token).build()
-    
-    # Configurar menú de comandos
-    await set_commands_menu(application)
-    
-    # Añadir handlers
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("menu", comando_menu))
-    application.add_handler(CommandHandler("pedido", comando_pedido))
-    application.add_handler(CommandHandler("faq", comando_faq))
-    application.add_handler(CommandHandler("ayuda", comando_ayuda))
-    application.add_handler(CommandHandler("admin", panel_admin))
-    application.add_handler(CommandHandler("valorar", comando_pedido))  # Temporal, se maneja en button_handler
-    
-    application.add_handler(CallbackQueryHandler(button_handler))
-    application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
-    
-    print("🤖 Bot v14 Mejorado iniciado...")
-    print("✅ Características activadas:")
-    print("   • Sistema de cooldown (30 min)")
-    print("   • Información de alérgenos")
-    print("   • FAQ completa")
-    print("   • Sistema de valoraciones")
-    print("   • Panel de administrador")
-    print("   • Base de datos SQLite")
-    print("   • Menú de comandos en la app")
-    
-    # Iniciar polling
-    await application.initialize()
-    await application.start()
-    await application.updater.start_polling()
-    
-    # Mantener el bot corriendo
-    try:
-        while True:
-            await asyncio.sleep(3600)
-    except KeyboardInterrupt:
-        print("\n⏹️  Deteniendo bot...")
-
-def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Manejador de mensajes de texto"""
-    if context.user_data.get('esperando_direccion'):
-        context.user_data['direccion'] = update.message.text
-        context.user_data['esperando_direccion'] = False 
-        # Llamar a mostrar_horas_disponibles (asegúrate de tener esta función)
-        asyncio.create_task(mostrar_horas_disponibles(update, context, es_edicion=False))
-    else:
-        # Si no está esperando dirección, mostrar ayuda
-        asyncio.create_task(comando_ayuda(update, context))
-
+# --- 12. FUNCIÓN PARA MOSTRAR HORAS ---
 async def mostrar_horas_disponibles(update, context, es_edicion=False):
     """Función para mostrar horas disponibles"""
     dia_actual, hora_actual, cerrado = obtener_info_tiempo()
@@ -937,9 +1025,93 @@ async def mostrar_horas_disponibles(update, context, es_edicion=False):
     
     if es_edicion:
         query = update.callback_query
-        await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+        await query.edit_message_text(
+            msg, 
+            reply_markup=InlineKeyboardMarkup(keyboard), 
+            parse_mode='Markdown'
+        )
     else:
-        await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+        await update.message.reply_text(
+            msg, 
+            reply_markup=InlineKeyboardMarkup(keyboard), 
+            parse_mode='Markdown'
+        )
+
+# --- 13. MANEJADOR DE MENSAJES ---
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Manejador de mensajes de texto"""
+    if context.user_data.get('esperando_direccion'):
+        context.user_data['direccion'] = update.message.text
+        context.user_data['esperando_direccion'] = False 
+        await mostrar_horas_disponibles(update, context, es_edicion=False)
+    else:
+        await comando_ayuda(update, context)
+
+# --- 14. SERVIDOR Y ANTI-SLEEP ---
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Knock Twice Bot - v14 Mejorado")
+
+def start_fake_server():
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
+    server.serve_forever()
+
+def mantener_despierto():
+    while True:
+        try:
+            time.sleep(600)
+            requests.get(URL_RENDER)
+        except Exception:
+            pass
+
+# --- 15. FUNCIÓN PRINCIPAL ---
+async def main():
+    # Inicializar base de datos
+    init_database()
+    
+    # Iniciar bot
+    token = os.environ.get("TELEGRAM_TOKEN", "TOKEN_FALSO")
+    application = ApplicationBuilder().token(token).build()
+    
+    # Configurar menú de comandos
+    await set_commands_menu(application)
+    
+    # Añadir handlers
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("menu", comando_menu))
+    application.add_handler(CommandHandler("pedido", comando_pedido))
+    application.add_handler(CommandHandler("faq", comando_faq))
+    application.add_handler(CommandHandler("ayuda", comando_ayuda))
+    application.add_handler(CommandHandler("valorar", comando_valorar))
+    application.add_handler(CommandHandler("admin", panel_admin))
+    
+    application.add_handler(CallbackQueryHandler(button_handler))
+    application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
+    
+    print("🤖 Bot v14 Mejorado iniciado...")
+    print("✅ Características activadas:")
+    print("   • Sistema de cooldown (30 min)")
+    print("   • Información de alérgenos")
+    print("   • FAQ completa")
+    print("   • Sistema de valoraciones")
+    print("   • Panel de administrador")
+    print("   • Base de datos SQLite")
+    print("   • Menú de comandos en la app")
+    
+    # Iniciar polling
+    await application.initialize()
+    await application.start()
+    await application.updater.start_polling()
+    
+    # Mantener el bot corriendo
+    try:
+        while True:
+            await asyncio.sleep(3600)
+    except KeyboardInterrupt:
+        print("\n⏹️  Deteniendo bot...")
 
 if __name__ == '__main__':
     # Iniciar servidor y anti-sleep
