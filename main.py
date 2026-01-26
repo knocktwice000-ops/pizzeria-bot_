@@ -147,7 +147,7 @@ FAQ = {
 }
 
 # --- 5. SISTEMA DE VALORACIONES ---
-async def pedir_valoracion(context: ContextTypes.DEFAULT_TYPE, user_id, pedido_id):
+async def pedir_valoracion(application, user_id, pedido_id):
     """Envía solicitud de valoración después de la entrega"""
     await asyncio.sleep(1800)  # Esperar 30 minutos
     
@@ -160,7 +160,7 @@ async def pedir_valoracion(context: ContextTypes.DEFAULT_TYPE, user_id, pedido_i
     ]
     
     try:
-        await context.bot.send_message(
+        await application.bot.send_message(
             user_id,
             "🙏 **¿CÓMO HA SIDO TU EXPERIENCIA?**\n\n"
             "Valora tu pedido para que podamos mejorar. "
@@ -538,12 +538,12 @@ async def comando_valorar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if pedido:
         pedido_id = pedido['id']
         keyboard = [
-        [InlineKeyboardButton("⭐", callback_data=f"valorar_{pedido_id}_1"),
-         InlineKeyboardButton("⭐⭐", callback_data=f"valorar_{pedido_id}_2"),
-         InlineKeyboardButton("⭐⭐⭐", callback_data=f"valorar_{pedido_id}_3"),
-         InlineKeyboardButton("⭐⭐⭐⭐", callback_data=f"valorar_{pedido_id}_4"),
-         InlineKeyboardButton("⭐⭐⭐⭐⭐", callback_data=f"valorar_{pedido_id}_5")]  # <-- CERRADO CORRECTAMENTE
-    ]
+            [InlineKeyboardButton("⭐", callback_data=f"valorar_{pedido_id}_1"),
+             InlineKeyboardButton("⭐⭐", callback_data=f"valorar_{pedido_id}_2"),
+             InlineKeyboardButton("⭐⭐⭐", callback_data=f"valorar_{pedido_id}_3"),
+             InlineKeyboardButton("⭐⭐⭐⭐", callback_data=f"valorar_{pedido_id}_4"),
+             InlineKeyboardButton("⭐⭐⭐⭐⭐", callback_data=f"valorar_{pedido_id}_5")]
+        ]
         
         await update.message.reply_text(
             "⭐ *VALORA TU ÚLTIMO PEDIDO*\n\n"
@@ -611,7 +611,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                  InlineKeyboardButton("⭐⭐", callback_data=f"valorar_{pedido_id}_2"),
                  InlineKeyboardButton("⭐⭐⭐", callback_data=f"valorar_{pedido_id}_3"),
                  InlineKeyboardButton("⭐⭐⭐⭐", callback_data=f"valorar_{pedido_id}_4"),
-                 InlineKeyboardButton("⭐⭐⭐⭐⭐", callback_data=f"valorar_{pedido_id}_5")]  # <-- CERRADO CORRECTAMENTE
+                 InlineKeyboardButton("⭐⭐⭐⭐⭐", callback_data=f"valorar_{pedido_id}_5")]
             ]
             
             await query.edit_message_text(
@@ -916,7 +916,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             actualizar_ultimo_pedido(user_id_cliente, usuario)
             
             # Programar solicitud de valoración
-            asyncio.create_task(pedir_valoracion(context, user_id_cliente, pedido_id))
+            application = context.application
+            asyncio.create_task(pedir_valoracion(application, user_id_cliente, pedido_id))
             
             mensaje_grupo = (
                 f"🚪 **NUEVO PEDIDO #{pedido_id}** 🚪\n"
@@ -1045,7 +1046,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['esperando_direccion'] = False 
         await mostrar_horas_disponibles(update, context, es_edicion=False)
     else:
-        await comando_ayuda(update, context)
+        await update.message.reply_text(
+            "ℹ️ Usa el menú de comandos (/start, /menu, /pedido, /faq) o los botones para interactuar con el bot."
+        )
 
 # --- 14. SERVIDOR Y ANTI-SLEEP ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
@@ -1053,19 +1056,25 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.end_headers()
         self.wfile.write(b"Knock Twice Bot - v14 Mejorado")
+    
+    def log_message(self, format, *args):
+        # Reducir logging para evitar spam
+        pass
 
 def start_fake_server():
     port = int(os.environ.get("PORT", 8080))
     server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
+    print(f"✅ Servidor de salud iniciado en puerto {port}")
     server.serve_forever()
 
 def mantener_despierto():
     while True:
         try:
-            time.sleep(600)
-            requests.get(URL_RENDER)
-        except Exception:
-            pass
+            time.sleep(300)  # 5 minutos
+            requests.get(URL_RENDER, timeout=10)
+            print(f"✅ Ping enviado a {URL_RENDER}")
+        except Exception as e:
+            print(f"⚠️  Error en ping: {e}")
 
 # --- 15. FUNCIÓN PRINCIPAL ---
 async def main():
@@ -1073,7 +1082,15 @@ async def main():
     init_database()
     
     # Iniciar bot
-    token = os.environ.get("TELEGRAM_TOKEN", "TOKEN_FALSO")
+    token = os.environ.get("TELEGRAM_TOKEN")
+    if not token:
+        print("❌ ERROR: TELEGRAM_TOKEN no configurado")
+        print("ℹ️ Configura la variable de entorno TELEGRAM_TOKEN en Render")
+        return
+    
+    print("🚀 Iniciando Knock Twice Bot...")
+    
+    # Crear aplicación
     application = ApplicationBuilder().token(token).build()
     
     # Configurar menú de comandos
@@ -1084,15 +1101,15 @@ async def main():
     application.add_handler(CommandHandler("menu", comando_menu))
     application.add_handler(CommandHandler("pedido", comando_pedido))
     application.add_handler(CommandHandler("faq", comando_faq))
-    application.add_handler(CommandHandler("ayuda", comando_ayuda))
     application.add_handler(CommandHandler("valorar", comando_valorar))
+    application.add_handler(CommandHandler("ayuda", comando_ayuda))
     application.add_handler(CommandHandler("admin", panel_admin))
     
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     
-    print("🤖 Bot v14 Mejorado iniciado...")
-    print("✅ Características activadas:")
+    print("✅ Bot configurado correctamente")
+    print("📋 Características activadas:")
     print("   • Sistema de cooldown (30 min)")
     print("   • Información de alérgenos")
     print("   • FAQ completa")
@@ -1102,9 +1119,13 @@ async def main():
     print("   • Menú de comandos en la app")
     
     # Iniciar polling
+    print("🔄 Iniciando polling...")
     await application.initialize()
     await application.start()
     await application.updater.start_polling()
+    
+    print("✅ Bot completamente operativo")
+    print(f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     
     # Mantener el bot corriendo
     try:
@@ -1112,11 +1133,21 @@ async def main():
             await asyncio.sleep(3600)
     except KeyboardInterrupt:
         print("\n⏹️  Deteniendo bot...")
+    finally:
+        await application.stop()
+        await application.shutdown()
 
 if __name__ == '__main__':
-    # Iniciar servidor y anti-sleep
-    threading.Thread(target=start_fake_server, daemon=True).start()
-    threading.Thread(target=mantener_despierto, daemon=True).start()
+    # Iniciar servidor en hilo separado
+    server_thread = threading.Thread(target=start_fake_server, daemon=True)
+    server_thread.start()
     
-    # Ejecutar bot
-    asyncio.run(main())
+    # Iniciar anti-sleep en hilo separado
+    ping_thread = threading.Thread(target=mantener_despierto, daemon=True)
+    ping_thread.start()
+    
+    # Ejecutar bot principal
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\n👋 Bot detenido por el usuario")
