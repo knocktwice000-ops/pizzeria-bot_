@@ -538,12 +538,12 @@ async def comando_valorar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if pedido:
         pedido_id = pedido['id']
         keyboard = [
-            [InlineKeyboardButton("⭐", callback_data=f"valorar_{pedido_id}_1"),
-             InlineKeyboardButton("⭐⭐", callback_data=f"valorar_{pedido_id}_2"),
-             InlineKeyboardButton("⭐⭐⭐", callback_data=f"valorar_{pedido_id}_3"),
-             InlineKeyboardButton("⭐⭐⭐⭐", callback_data=f"valorar_{pedido_id}_4"),
-             InlineKeyboardButton("⭐⭐⭐⭐⭐", callback_data=f"valorar_{pedido_id}_5)]
-        ]
+        [InlineKeyboardButton("⭐", callback_data=f"valorar_{pedido_id}_1"),
+         InlineKeyboardButton("⭐⭐", callback_data=f"valorar_{pedido_id}_2"),
+         InlineKeyboardButton("⭐⭐⭐", callback_data=f"valorar_{pedido_id}_3"),
+         InlineKeyboardButton("⭐⭐⭐⭐", callback_data=f"valorar_{pedido_id}_4"),
+         InlineKeyboardButton("⭐⭐⭐⭐⭐", callback_data=f"valorar_{pedido_id}_5")]  # <-- CERRADO CORRECTAMENTE
+    ]
         
         await update.message.reply_text(
             "⭐ *VALORA TU ÚLTIMO PEDIDO*\n\n"
@@ -611,7 +611,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                  InlineKeyboardButton("⭐⭐", callback_data=f"valorar_{pedido_id}_2"),
                  InlineKeyboardButton("⭐⭐⭐", callback_data=f"valorar_{pedido_id}_3"),
                  InlineKeyboardButton("⭐⭐⭐⭐", callback_data=f"valorar_{pedido_id}_4"),
-                 InlineKeyboardButton("⭐⭐⭐⭐⭐", callback_data=f"valorar_{pedido_id}_5)]
+                 InlineKeyboardButton("⭐⭐⭐⭐⭐", callback_data=f"valorar_{pedido_id}_5")]  # <-- CERRADO CORRECTAMENTE
             ]
             
             await query.edit_message_text(
