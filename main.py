@@ -1046,13 +1046,26 @@ def button_handler(update: Update, context: CallbackContext):
     query = update.callback_query
     data = query.data
     
-    # Navegación principal
+    # Navegación principal - CORREGIDO
     if data == 'menu_principal':
         menu_principal(update, context, query)
     
     elif data == 'inicio':
-        start(update, context)
-        query.message.delete()
+        # SOLUCIÓN: Enviar nuevo mensaje en vez de borrar
+        try:
+            query.answer()
+            # Enviar nuevo mensaje de inicio
+            start(update, context)
+            # Intentar borrar el mensaje anterior (opcional)
+            try:
+                query.message.delete()
+            except:
+                pass  # Si no se puede borrar, no pasa nada
+        except Exception as e:
+            print(f"Error en inicio: {e}")
+            query.answer("⏳ Cargando...")
+            # Fallback: simplemente mostrar el inicio
+            start(update, context)
     
     elif data == 'ver_carrito':
         ver_carrito(update, context, query)
