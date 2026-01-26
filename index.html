@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Knock Twice - Pizza & Burgers de Autor 🤫</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        
+        body {
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            color: #fff;
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        
+        header {
+            text-align: center;
+            padding: 40px 20px;
+            position: relative;
+        }
+        
+        .logo {
+            font-size: 4rem;
+            margin-bottom: 20px;
+            animation: float 3s ease-in-out infinite;
+        }
+        
+        @keyframes float {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-15px); }
+        }
+        
+        h1 {
+            font-size: 3.5rem;
+            margin-bottom: 15px;
+            background: linear-gradient(to right, #ff9a00, #ff5e00);
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+            text-shadow: 0 5px 15px rgba(255, 94, 0, 0.3);
+        }
+        
+        .tagline {
+            font-size: 1.5rem;
+            color: #aaa;
+            margin-bottom: 30px;
+            font-style: italic;
+        }
+        
+        .main-content {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 40px;
+            margin: 40px 0;
+        }
+        
+        .info-section {
+            flex: 1;
+            min-width: 300px;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 20px;
+            padding: 30px;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+        }
+        
+        .info-section h2 {
+            font-size: 2rem;
+            margin-bottom: 25px;
+            color: #ff9a00;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .info-section h2 i {
+            font-size: 1.8rem;
+        }
+        
+        .info-item {
+            margin-bottom: 25px;
+            padding-bottom: 20px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        .info-item:last-child {
+            border-bottom: none;
+            margin-bottom: 0;
+        }
+        
+        .info-item h3 {
+            font-size: 1.3rem;
+            margin-bottom: 8px;
+            color: #fff;
+        }
+        
+        .info-item p {
+            color: #ccc;
+            line-height: 1.6;
+        }
+        
+        .highlight {
+            color: #ff9a00;
+            font-weight: bold;
+        }
+        
+        .bot-section {
+            flex: 1;
+            min-width: 300px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+        }
+        
+        .bot-icon {
+            font-size: 8rem;
+            margin-bottom: 30px;
+            animation: pulse 2s infinite;
+        }
+        
+        @keyframes pulse {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.05); }
+            100% { transform: scale(1); }
+        }
+        
+        .bot-description {
+            font-size: 1.3rem;
+            margin-bottom: 40px;
+            line-height: 1.7;
+            max-width: 500px;
+        }
+        
+        .bot-button {
+            display: inline-block;
+            background: linear-gradient(to right, #25D366, #128C7E);
+            color: white;
+            text-decoration: none;
+            padding: 18px 40px;
+            border-radius: 50px;
+            font-size: 1.4rem;
+            font-weight: bold;
+            transition: all 0.3s ease;
+            box-shadow: 0 10px 20px rgba(37, 211, 102, 0.3);
+            margin-top: 20px;
+        }
+        
+        .bot-button:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 15px 30px rgba(37, 211, 102, 0.4);
+            background: linear-gradient(to right, #1da851, #0d7d5a);
+        }
+        
+        .bot-button i {
+            margin-right: 10px;
+        }
+        
+        .features {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 25px;
+            margin: 60px 0;
+        }
+        
+        .feature {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 15px;
+            padding: 25px;
+            text-align: center;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            transition: transform 0.3s ease;
+        }
+        
+        .feature:hover {
+            transform: translateY(-10px);
+            background: rgba(255, 255, 255, 0.08);
+        }
+        
+        .feature-icon {
+            font-size: 3rem;
+            margin-bottom: 20px;
+            color: #ff9a00;
+        }
+        
+        .feature h3 {
+            font-size: 1.5rem;
+            margin-bottom: 15px;
+        }
+        
+        .feature p {
+            color: #ccc;
+            line-height: 1.6;
+        }
+        
+        footer {
+            text-align: center;
+            padding: 40px 20px;
+            margin-top: 60px;
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+            color: #aaa;
+        }
+        
+        .social-icons {
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+            margin: 30px 0;
+        }
+        
+        .social-icons a {
+            color: #fff;
+            font-size: 1.8rem;
+            transition: color 0.3s ease;
+        }
+        
+        .social-icons a:hover {
+            color: #ff9a00;
+        }
+        
+        .copyright {
+            font-size: 0.9rem;
+            margin-top: 20px;
+            color: #777;
+        }
+        
+        .mobile-warning {
+            display: none;
+            background: rgba(255, 90, 0, 0.2);
+            border: 1px solid rgba(255, 90, 0, 0.4);
+            border-radius: 10px;
+            padding: 15px;
+            margin: 20px 0;
+            text-align: center;
+        }
+        
+        @media (max-width: 768px) {
+            h1 {
+                font-size: 2.5rem;
+            }
+            
+            .logo {
+                font-size: 3rem;
+            }
+            
+            .tagline {
+                font-size: 1.2rem;
+            }
+            
+            .bot-icon {
+                font-size: 6rem;
+            }
+            
+            .mobile-warning {
+                display: block;
+            }
+        }
+        
+        .qr-container {
+            margin-top: 30px;
+            background: rgba(255, 255, 255, 0.05);
+            padding: 20px;
+            border-radius: 15px;
+            display: inline-block;
+        }
+        
+        .qr-code {
+            width: 200px;
+            height: 200px;
+            background: #fff;
+            padding: 10px;
+            border-radius: 10px;
+            margin-bottom: 15px;
+        }
+        
+        .qr-text {
+            font-size: 0.9rem;
+            color: #aaa;
+        }
+        
+        .qr-placeholder {
+            width: 200px;
+            height: 200px;
+            background: #f0f0f0;
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #333;
+            font-weight: bold;
+            margin: 0 auto 15px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="logo">
+                🚪🤫
+            </div>
+            <h1>KNOCK TWICE</h1>
+            <p class="tagline">Pizza & Burgers de autor • Experiencia exclusiva</p>
+        </header>
+        
+        <div class="mobile-warning">
+            <i class="fas fa-mobile-alt"></i> Para una mejor experiencia, abre nuestro bot desde tu dispositivo móvil.
+        </div>
+        
+        <div class="main-content">
+            <div class="info-section">
+                <h2><i class="fas fa-info-circle"></i> INFORMACIÓN</h2>
+                
+                <div class="info-item">
+                    <h3>🍽️ NUESTRA CARTA</h3>
+                    <p>Pizzas artesanales, burgers gourmet y postres caseros. <span class="highlight">Todos los productos muestran sus alérgenos</span> antes de añadirlos al pedido.</p>
+                </div>
+                
+                <div class="info-item">
+                    <h3>🕒 HORARIO DE PEDIDOS</h3>
+                    <p><span class="highlight">Viernes:</span> 20:30 - 23:00<br>
+                       <span class="highlight">Sábado:</span> 13:30 - 16:00 / 20:30 - 23:00<br>
+                       <span class="highlight">Domingo:</span> 13:30 - 16:00 / 20:30 - 23:00</p>
+                </div>
+                
+                <div class="info-item">
+                    <h3>📍 ZONA DE ENTREGA</h3>
+                    <p>Entregamos en el <span class="highlight">centro y alrededores</span>. Si tienes dudas sobre tu zona, pregunta directamente en el bot al hacer el pedido.</p>
+                </div>
+                
+                <div class="info-item">
+                    <h3>💳 MÉTODO DE PAGO</h3>
+                    <p>Aceptamos <span class="highlight">efectivo</span> al entregar el pedido. Pago contra entrega.</p>
+                </div>
+                
+                <div class="info-item">
+                    <h3>🚚 TIEMPO DE ENTREGA</h3>
+                    <p>Aproximadamente <span class="highlight">30-45 minutos</span>. En horas pico puede tardar un poco más.</p>
+                </div>
+            </div>
+            
+            <div class="bot-section">
+                <div class="bot-icon">
+                    🤖
+                </div>
+                
+                <div class="bot-description">
+                    <p>Nuestro <span class="highlight">bot de Telegram</span> te permite hacer pedidos fácilmente, ver el menú completo con alérgenos, seleccionar horarios y hacer preguntas frecuentes.</p>
+                    
+                    <p>Todo desde la comodidad de tu teléfono, sin descargas adicionales.</p>
+                </div>
+                
+                <a href="https://t.me/KnockTwiceBot" class="bot-button" target="_blank">
+                    <i class="fab fa-telegram"></i> ABRIR BOT EN TELEGRAM
+                </a>
+                
+                <div class="qr-container">
+                    <div class="qr-placeholder">
+                        ESCANEA CON TU TELÉFONO
+                    </div>
+                    <p class="qr-text">Apunta con la cámara de tu móvil</p>
+                </div>
+            </div>
+        </div>
+        
+        <div class="features">
+            <div class="feature">
+                <div class="feature-icon">🍕</div>
+                <h3>PIZZAS ARTESANAS</h3>
+                <p>Masa fermentada 48h, ingredientes de primera calidad y combinaciones únicas.</p>
+            </div>
+            
+            <div class="feature">
+                <div class="feature-icon">🍔</div>
+                <h3>BURGERS GOURMET</h3>
+                <p>Carne 100% ternera, pan brioche y salsas caseras. Una experiencia única.</p>
+            </div>
+            
+            <div class="feature">
+                <div class="feature-icon">⭐</div>
+                <h3>VALORACIÓN 4.8/5</h3>
+                <p>Nuestros clientes nos avalan. Sistema de valoraciones integrado en el bot.</p>
+            </div>
+            
+            <div class="feature">
+                <div class="feature-icon">🚚</div>
+                <h3>ENTREGA RÁPIDA</h3>
+                <p>Servicio eficiente para que disfrutes de tu comida caliente y a tiempo.</p>
+            </div>
+        </div>
+        
+        <footer>
+            <div class="social-icons">
+                <a href="#"><i class="fab fa-instagram"></i></a>
+                <a href="#"><i class="fab fa-facebook"></i></a>
+                <a href="#"><i class="fab fa-twitter"></i></a>
+            </div>
+            
+            <p>¿Tienes alguna duda? Escríbenos a través de nuestro bot de Telegram</p>
+            <p class="copyright">© 2024 Knock Twice - Pizza & Burgers de autor. Todos los derechos reservados.</p>
+        </footer>
+    </div>
+
+    <script>
+        // Animación suave al cargar
+        document.addEventListener('DOMContentLoaded', function() {
+            const elements = document.querySelectorAll('.info-section, .bot-section, .feature');
+            elements.forEach((el, index) => {
+                setTimeout(() => {
+                    el.style.opacity = '1';
+                    el.style.transform = 'translateY(0)';
+                }, index * 100);
+            });
+            
+            // Estilos iniciales para animación
+            document.querySelectorAll('.info-section, .bot-section, .feature').forEach(el => {
+                el.style.opacity = '0';
+                el.style.transform = 'translateY(20px)';
+                el.style.transition = 'opacity 0.5s ease, transform 0.5s ease';
+            });
+            
+            // Simulación de QR dinámico (podrías generar un QR real aquí)
+            const qrPlaceholder = document.querySelector('.qr-placeholder');
+            if (qrPlaceholder) {
+                setTimeout(() => {
+                    qrPlaceholder.innerHTML = `
+                        <div style="text-align: center; padding: 20px;">
+                            <div style="font-size: 3rem; margin-bottom: 10px;">📱</div>
+                            <div style="font-size: 0.8rem; color: #333;">https://t.me/KnockTwiceBot</div>
+                        </div>
+                    `;
+                }, 1000);
+            }
+        });
+        
+        // Efecto de confeti al hacer clic en el botón
+        document.querySelector('.bot-button').addEventListener('click', function() {
+            // Aquí podrías añadir animación de confeti si quisieras
+            console.log('Redirigiendo al bot de Telegram...');
+        });
+    </script>
+</body>
+</html>
