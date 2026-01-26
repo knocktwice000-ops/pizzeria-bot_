@@ -8,13 +8,23 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageHandler, Filters, CallbackContext
 
-# --- CONFIGURACIÓN ---
+# ============ CONFIGURACIÓN ============
 ID_GRUPO_PEDIDOS = "-5151917747"
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 MODO_PRUEBAS = True
 
-# --- BASE DE DATOS MEJORADA ---
+# Configuración de administradores
+admin_ids_str = os.environ.get("ADMIN_IDS", "")
+if admin_ids_str:
+    ADMIN_IDS = [int(id.strip()) for id in admin_ids_str.split(",") if id.strip().isdigit()]
+else:
+    ADMIN_IDS = [123456789]  # Cambia este ID por el tuyo
+
+print(f"🤖 Bot iniciado | Admins: {ADMIN_IDS}")
+
+# ============ BASE DE DATOS ============
 def init_db():
+    """Inicializa todas las tablas de la base de datos"""
     conn = sqlite3.connect('knocktwice.db')
     c = conn.cursor()
     
@@ -47,7 +57,7 @@ def init_db():
                   comentario TEXT,
                   fecha TEXT)''')
     
-    # Tabla de FAQ para estadísticas
+    # Tabla de FAQ
     c.execute('''CREATE TABLE IF NOT EXISTS faq_stats
                  (pregunta TEXT PRIMARY KEY,
                   veces_preguntada INTEGER DEFAULT 0)''')
@@ -57,226 +67,10 @@ def init_db():
     print("✅ Base de datos inicializada")
 
 def get_db():
+    """Obtiene conexión a la base de datos"""
     return sqlite3.connect('knocktwice.db')
 
-# --- SISTEMA DE VALORACIONES ---
-def guardar_valoracion(pedido_id, user_id, estrellas, comentario=None):
-    """Guarda una valoración en la base de datos"""
-    conn = get_db()
-    c = conn.cursor()
-    
-    # Guardar en tabla de valoraciones
-    c.execute('''INSERT INTO valoraciones (pedido_id, user_id, estrellas, comentario, fecha)
-                 VALUES (?, ?, ?, ?, ?)''',
-              (pedido_id, user_id, estrellas, comentario, datetime.now().isoformat()))
-    
-    # Actualizar valoración en el pedido
-    c.execute("UPDATE pedidos SET valoracion = ? WHERE id = ?", (estrellas, pedido_id))
-    
-    conn.commit()
-    conn.close()
-
-def obtener_pedidos_sin_valorar(user_id):
-    """Obtiene pedidos del usuario sin valorar"""
-    conn = get_db()
-    c = conn.cursor()
-    c.execute('''SELECT id, productos, fecha FROM pedidos 
-                 WHERE user_id = ? AND valoracion = 0
-                 ORDER BY fecha DESC LIMIT 5''', (user_id,))
-    pedidos = c.fetchall()
-    conn.close()
-    return pedidos
-
-def obtener_valoracion_promedio():
-    """Obtiene la valoración promedio del restaurante"""
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT AVG(valoracion) FROM pedidos WHERE valoracion > 0")
-    resultado = c.fetchone()[0]
-    conn.close()
-    return round(resultado, 1) if resultado else 0.0
-
-# --- PREGUNTAS FRECUENTES (FAQ) COMPLETO ---
-FAQ = {
-    "horario": {
-        "pregunta": "🕒 ¿Cuál es vuestro horario?",
-        "respuesta": """*HORARIO DE APERTURA:* 📅
-
-🍽️ *VIERNES:*
-• Cena: 20:30 - 23:00
-
-🍽️ *SÁBADO:*
-• Comida: 13:30 - 16:00
-• Cena: 20:30 - 23:00
-
-🍽️ *DOMINGO:*
-• Comida: 13:30 - 16:00  
-• Cena: 20:30 - 23:00
-
-*Cerramos de Lunes a Jueves.*"""
-    },
-    "zona": {
-        "pregunta": "📍 ¿Hasta dónde entregáis?",
-        "respuesta": """*ZONA DE REPARTO:* 🛵
-
-Entregamos en el **centro histórico de Bilbao** y alrededores:
-
-• **Radio de 3km** desde nuestro local
-• **Zonas principales:** Casco Viejo, Indautxu, Deusto, Abando
-• **Excluimos:** Zonas periféricas y pueblos
-
-Si vives fuera de nuestra zona, ¡contáctanos por privado! Podemos hacer excepciones."""
-    },
-    "alergenos": {
-        "pregunta": "⚠️ ¿Tenéis información de alérgenos?",
-        "respuesta": """*INFORMACIÓN DE ALÉRGENOS:* 🚫
-
-✅ *SÍ INFORMAMOS* de todos los alérgenos en cada producto.
-✅ Puedes verlos antes de añadir cualquier producto al carrito.
-✅ Si tienes alergias severas, AVÍSANOS en la dirección del pedido.
-
-⚠️ *Importante:* Aunque informamos, compartimos cocina. No podemos garantizar contaminación cero."""
-    },
-    "vegetariano": {
-        "pregunta": "🥬 ¿Tenéis opciones vegetarianas?",
-        "respuesta": """*OPCIONES VEGETARIANAS:* 🌱
-
-🍕 *PIZZAS VEGETARIANAS:*
-• Margarita (sin jamón)
-• Personalizada (pídenosla sin carne)
-
-🍔 *BURGER VEGETARIANA:*
-• Al Capone (queso de cabra, sin carne)
-
-🍰 *POSTRE:*
-• Tarta de La Viña (vegetariana)
-
-*¿Quieres algo especial?* ¡Escríbenos! Hacemos personalizaciones."""
-    },
-    "gluten": {
-        "pregunta": "🌾 ¿Opciones sin gluten?",
-        "respuesta": """*OPCIONES SIN GLUTEN:* 🚫🌾
-
-Actualmente **NO tenemos base sin gluten** para nuestras pizzas y burgers.
-
-⚠️ *TODOS nuestros productos contienen GLUTEN.*
-
-*Estamos trabajando* para ofrecer opciones sin gluten pronto. ¡Síguenos para novedades!"""
-    },
-    "tiempo": {
-        "pregunta": "⏱️ ¿Cuánto tarda el pedido?",
-        "respuesta": """*TIEMPOS DE ESPERA:* ⌛
-
-⏰ *TIEMPO ESTIMADO DE ENTREGA:*
-• Normal: 30-45 minutos
-• Horas pico: 45-60 minutos
-• Muy ocupados: Hasta 75 minutos
-
-*Factores que afectan:*
-• Hora del día (20:30-22:00 es la más ocupada)
-• Complejidad del pedido
-• Condiciones meteorológicas
-
-*¿Quieres recibirlo rápido?* Pide fuera de horas pico."""
-    },
-    "pago": {
-        "pregunta": "💳 ¿Qué métodos de pago aceptáis?",
-        "respuesta": """*MÉTODOS DE PAGO:* 💰
-
-✅ *EFECTIVO:* Al repartidor
-✅ *BIZUM:* +34 600 000 000 (Knock Twice)
-✅ *TARJETA:* A través de enlace seguro (te lo enviamos)
-
-*Recomendamos:* Efectivo o Bizum para mayor rapidez.
-
-⚠️ *No aceptamos:* Cheques, criptomonedas, pagos aplazados."""
-    },
-    "contacto": {
-        "pregunta": "📞 ¿Cómo os contacto?",
-        "respuesta": """*CONTACTO:* 📱
-
-• *POR ESTE BOT:* Para pedidos y consultas
-• *TELÉFONO:* +34 600 000 000 (solo en horario)
-• *WHATSAPP:* Mismo número de teléfono
-• *INSTAGRAM:* @knocktwicebilbao
-
-*Horario de contacto:* Mismo que horario de apertura.
-
-*Fuera de horario:* Deja tu mensaje, te responderemos al abrir."""
-    },
-    "devoluciones": {
-        "pregunta": "🔄 ¿Política de devoluciones?",
-        "respuesta": """*POLÍTICA DE DEVOLUCIONES:* 🔄
-
-✅ *ACEPTAMOS DEVOLUCIÓN SI:*
-• El pedido llega incorrecto
-• Hay un problema de calidad
-• Llega fuera del tiempo prometido (+90 min)
-
-❌ *NO ACEPTAMOS DEVOLUCIÓN SI:*
-• No te gustó el sabor (subjetivo)
-• Cambiaste de opinión
-• Problemas logísticos ajenos
-
-*Proceso:* Contacta por este bot en 30 minutos tras recibir."""
-    },
-    "grupos": {
-        "pregunta": "👥 ¿Hacéis pedidos para grupos?",
-        "respuesta": """*PEDIDOS PARA GRUPOS:* 🎉
-
-✅ *SÍ ACEPTAMOS* pedidos grandes para:
-• Fiestas de cumpleaños
-• Reuniones de trabajo
-• Eventos especiales
-• Cenas familiares
-
-📋 *Requisitos:*
-• Mínimo 48 horas de antelación
-• Depósito del 50%
-• Dirección dentro de nuestra zona
-
-*Contacta por privado* para pedidos especiales."""
-    }
-}
-
-def registrar_consulta_faq(pregunta):
-    """Registra una consulta FAQ para estadísticas"""
-    conn = get_db()
-    c = conn.cursor()
-    c.execute('''INSERT OR REPLACE INTO faq_stats (pregunta, veces_preguntada)
-                 VALUES (?, COALESCE((SELECT veces_preguntada FROM faq_stats WHERE pregunta = ?), 0) + 1)''',
-              (pregunta, pregunta))
-    conn.commit()
-    conn.close()
-
-# --- SISTEMA DE COOLDOWN ---
-def verificar_cooldown(user_id):
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT ultimo_pedido FROM usuarios WHERE user_id = ?", (user_id,))
-    resultado = c.fetchone()
-    conn.close()
-    
-    if resultado and resultado[0]:
-        ultimo_pedido = datetime.fromisoformat(resultado[0])
-        tiempo_transcurrido = datetime.now() - ultimo_pedido
-        
-        if tiempo_transcurrido < timedelta(minutes=30):
-            minutos_restantes = 30 - int(tiempo_transcurrido.total_seconds() / 60)
-            return False, minutos_restantes
-    
-    return True, 0
-
-def actualizar_cooldown(user_id, username):
-    conn = get_db()
-    c = conn.cursor()
-    c.execute('''INSERT OR REPLACE INTO usuarios (user_id, username, ultimo_pedido)
-                 VALUES (?, ?, ?)''',
-              (user_id, username, datetime.now().isoformat()))
-    conn.commit()
-    conn.close()
-
-# --- MENÚ (igual que antes) ---
+# ============ MENÚ CON ALÉRGENOS ============
 MENU = {
     "pizzas": {
         "titulo": "🍕 PIZZAS",
@@ -349,7 +143,214 @@ MENU = {
     }
 }
 
-# --- GESTIÓN DE HORARIOS ---
+# ============ PREGUNTAS FRECUENTES ============
+FAQ = {
+    "horario": {
+        "pregunta": "🕒 ¿Cuál es vuestro horario?",
+        "respuesta": """*HORARIO:*\n• Viernes: 20:30-23:00\n• Sábado: 13:30-16:00 / 20:30-23:00\n• Domingo: 13:30-16:00 / 20:30-23:00"""
+    },
+    "zona": {
+        "pregunta": "📍 ¿Hasta dónde entregáis?",
+        "respuesta": "Entregamos en el centro histórico de Bilbao (radio 3km)."
+    },
+    "alergenos": {
+        "pregunta": "⚠️ ¿Tenéis información de alérgenos?",
+        "respuesta": "Sí, cada producto muestra sus alérgenos antes de añadirlo al carrito."
+    },
+    "vegetariano": {
+        "pregunta": "🥬 ¿Opciones vegetarianas?",
+        "respuesta": "¡Claro! Pizza Margarita, Al Capone y personalizaciones."
+    },
+    "gluten": {
+        "pregunta": "🌾 ¿Opciones sin gluten?",
+        "respuesta": "Actualmente no tenemos base sin gluten. ¡Pronto!"
+    },
+    "tiempo": {
+        "pregunta": "⏱️ ¿Cuánto tarda el pedido?",
+        "respuesta": "30-45 minutos normalmente. En horas pico puede tardar más."
+    },
+    "pago": {
+        "pregunta": "💳 ¿Qué métodos de pago aceptáis?",
+        "respuesta": "Efectivo, Bizum (+34 600 000 000) y tarjeta."
+    },
+    "contacto": {
+        "pregunta": "📞 ¿Cómo os contacto?",
+        "respuesta": "Por este bot o al +34 600 000 000 en horario."
+    }
+}
+
+def registrar_consulta_faq(pregunta):
+    """Registra una consulta FAQ"""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute('''INSERT OR REPLACE INTO faq_stats (pregunta, veces_preguntada)
+                 VALUES (?, COALESCE((SELECT veces_preguntada FROM faq_stats WHERE pregunta = ?), 0) + 1)''',
+              (pregunta, pregunta))
+    conn.commit()
+    conn.close()
+
+# ============ SISTEMA DE COOLDOWN ============
+def verificar_cooldown(user_id):
+    """Verifica si el usuario puede hacer otro pedido (30 min cooldown)"""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT ultimo_pedido FROM usuarios WHERE user_id = ?", (user_id,))
+    resultado = c.fetchone()
+    conn.close()
+    
+    if resultado and resultado[0]:
+        ultimo_pedido = datetime.fromisoformat(resultado[0])
+        tiempo_transcurrido = datetime.now() - ultimo_pedido
+        
+        if tiempo_transcurrido < timedelta(minutes=30):
+            minutos_restantes = 30 - int(tiempo_transcurrido.total_seconds() / 60)
+            return False, minutos_restantes
+    
+    return True, 0
+
+def actualizar_cooldown(user_id, username):
+    """Actualiza el último pedido del usuario"""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute('''INSERT OR REPLACE INTO usuarios (user_id, username, ultimo_pedido)
+                 VALUES (?, ?, ?)''',
+              (user_id, username, datetime.now().isoformat()))
+    conn.commit()
+    conn.close()
+
+# ============ SISTEMA DE VALORACIONES ============
+def guardar_valoracion(pedido_id, user_id, estrellas):
+    """Guarda una valoración en la base de datos"""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute('''INSERT INTO valoraciones (pedido_id, user_id, estrellas, fecha)
+                 VALUES (?, ?, ?, ?)''',
+              (pedido_id, user_id, estrellas, datetime.now().isoformat()))
+    c.execute("UPDATE pedidos SET valoracion = ? WHERE id = ?", (estrellas, pedido_id))
+    conn.commit()
+    conn.close()
+
+def obtener_pedidos_sin_valorar(user_id):
+    """Obtiene pedidos del usuario sin valorar"""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute('''SELECT id, productos FROM pedidos 
+                 WHERE user_id = ? AND valoracion = 0
+                 ORDER BY fecha DESC LIMIT 3''', (user_id,))
+    pedidos = c.fetchall()
+    conn.close()
+    return pedidos
+
+def obtener_valoracion_promedio():
+    """Obtiene la valoración promedio"""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT AVG(valoracion) FROM pedidos WHERE valoracion > 0")
+    resultado = c.fetchone()[0]
+    conn.close()
+    return round(resultado, 1) if resultado else 0.0
+
+# ============ FUNCIONES DE ADMINISTRADOR ============
+def es_admin(user_id):
+    """Verifica si un usuario es administrador"""
+    return user_id in ADMIN_IDS
+
+def obtener_estadisticas():
+    """Obtiene estadísticas del sistema"""
+    conn = get_db()
+    c = conn.cursor()
+    
+    hoy = datetime.now().strftime("%Y-%m-%d")
+    
+    # Pedidos de hoy
+    c.execute("SELECT COUNT(*), SUM(total) FROM pedidos WHERE DATE(fecha) = ?", (hoy,))
+    pedidos_hoy = c.fetchone()
+    
+    # Total histórico
+    c.execute("SELECT COUNT(*), SUM(total) FROM pedidos")
+    total_historico = c.fetchone()
+    
+    # Valoración promedio
+    c.execute("SELECT AVG(valoracion) FROM pedidos WHERE valoracion > 0")
+    valoracion_promedio = c.fetchone()[0] or 0
+    
+    # Usuarios activos
+    c.execute('''SELECT COUNT(DISTINCT user_id) FROM pedidos 
+                 WHERE DATE(fecha) >= DATE('now', '-7 days')''')
+    usuarios_activos = c.fetchone()[0]
+    
+    conn.close()
+    
+    return {
+        'hoy': {
+            'pedidos': pedidos_hoy[0] or 0,
+            'ventas': pedidos_hoy[1] or 0.0
+        },
+        'historico': {
+            'pedidos': total_historico[0] or 0,
+            'ventas': total_historico[1] or 0.0
+        },
+        'valoracion_promedio': round(valoracion_promedio, 1),
+        'usuarios_activos': usuarios_activos or 0
+    }
+
+def obtener_usuarios_con_cooldown():
+    """Obtiene usuarios con cooldown activo"""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute('''SELECT user_id, username, ultimo_pedido FROM usuarios 
+                 WHERE ultimo_pedido IS NOT NULL''')
+    usuarios = c.fetchall()
+    conn.close()
+    
+    resultado = []
+    for user_id, username, ultimo_pedido in usuarios:
+        if ultimo_pedido:
+            fecha_pedido = datetime.fromisoformat(ultimo_pedido)
+            tiempo_transcurrido = datetime.now() - fecha_pedido
+            
+            if tiempo_transcurrido < timedelta(minutes=30):
+                minutos_restantes = 30 - int(tiempo_transcurrido.total_seconds() / 60)
+                resultado.append({
+                    'user_id': user_id,
+                    'username': username or f"ID: {user_id}",
+                    'minutos_restantes': minutos_restantes
+                })
+    
+    return resultado
+
+def resetear_cooldowns():
+    """Resetea todos los cooldowns"""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("UPDATE usuarios SET ultimo_pedido = NULL")
+    conn.commit()
+    conn.close()
+    return True
+
+def obtener_pedidos_recientes():
+    """Obtiene pedidos recientes"""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute('''SELECT id, username, productos, total, estado, fecha 
+                 FROM pedidos ORDER BY fecha DESC LIMIT 10''')
+    pedidos = c.fetchall()
+    conn.close()
+    
+    resultado = []
+    for pedido in pedidos:
+        resultado.append({
+            'id': pedido[0],
+            'username': pedido[1] or "Anónimo",
+            'productos': pedido[2],
+            'total': pedido[3],
+            'estado': pedido[4],
+            'fecha': datetime.fromisoformat(pedido[5]).strftime("%H:%M")
+        })
+    
+    return resultado
+
+# ============ GESTIÓN DE HORARIOS ============
 TURNOS = {
     "VIERNES": ["20:30", "21:00", "21:15", "21:30", "22:00", "22:15", "22:30"],
     "SABADO": ["13:30", "13:45", "14:00", "14:15", "14:30", "14:45", "15:00", "15:15", "15:30",
@@ -367,8 +368,9 @@ def obtener_hora_actual():
     ahora = datetime.utcnow() + timedelta(hours=1)
     return ahora.strftime("%H:%M")
 
-# --- HANDLERS PRINCIPALES ---
+# ============ HANDLERS PRINCIPALES ============
 def start(update: Update, context: CallbackContext):
+    """Comando /start"""
     user = update.effective_user
     user_id = user.id
     
@@ -389,23 +391,19 @@ def start(update: Update, context: CallbackContext):
     # Verificar si estamos abiertos
     if dia_actual not in ["VIERNES", "SABADO", "DOMINGO"] and not MODO_PRUEBAS:
         update.message.reply_text(
-            f"⛔ **CERRADO**\n\nHoy es {dia_actual}. Abrimos:\n"
-            f"• Viernes: 20:30-23:00\n"
-            f"• Sábado: 13:30-16:00 / 20:30-23:00\n"
-            f"• Domingo: 13:30-16:00 / 20:30-23:00",
+            f"⛔ **CERRADO**\n\nHoy es {dia_actual}. Abrimos Viernes, Sábado y Domingo.",
             parse_mode='Markdown'
         )
         return
     
-    # Inicializar carrito si no existe
+    # Inicializar carrito
     if 'carrito' not in context.user_data:
         context.user_data['carrito'] = []
-    
     context.user_data['esperando_direccion'] = False
     
-    # Mensaje de bienvenida
+    # Valoración promedio
     valoracion_promedio = obtener_valoracion_promedio()
-    estrellas = "⭐" * int(valoracion_promedio) if valoracion_promedio > 0 else "Sin valoraciones aún"
+    estrellas = "⭐" * int(valoracion_promedio) if valoracion_promedio > 0 else "Sin valoraciones"
     
     welcome_text = (
         f"🚪 **BIENVENIDO A KNOCK TWICE** 🤫\n\n"
@@ -428,266 +426,8 @@ def start(update: Update, context: CallbackContext):
         parse_mode='Markdown'
     )
 
-# --- HANDLERS DE VALORACIONES ---
-def valorar_menu(update: Update, context: CallbackContext):
-    """Muestra el menú de valoraciones"""
-    query = update.callback_query
-    query.answer()
-    
-    user_id = query.from_user.id
-    pedidos_sin_valorar = obtener_pedidos_sin_valorar(user_id)
-    
-    if not pedidos_sin_valorar:
-        query.edit_message_text(
-            "⭐ **NO HAY PEDIDOS PENDIENTES DE VALORAR**\n\n"
-            "¡Gracias por tu apoyo! Todos tus pedidos ya han sido valorados.\n\n"
-            "¿Quieres hacer un nuevo pedido?",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🍽️ HACER PEDIDO", callback_data='menu_principal')],
-                [InlineKeyboardButton("🏠 INICIO", callback_data='inicio')]
-            ]),
-            parse_mode='Markdown'
-        )
-        return
-    
-    # Mostrar pedidos para valorar
-    keyboard = []
-    for pedido in pedidos_sin_valorar[:3]:  # Mostrar máximo 3 pedidos
-        pedido_id = pedido[0]
-        productos = pedido[1]
-        fecha = datetime.fromisoformat(pedido[2]).strftime("%d/%m %H:%M")
-        
-        # Acortar texto si es muy largo
-        if len(productos) > 30:
-            productos = productos[:27] + "..."
-        
-        keyboard.append([
-            InlineKeyboardButton(f"📦 Pedido #{pedido_id} - {fecha}", 
-                               callback_data=f"valorar_pedido_{pedido_id}")
-        ])
-    
-    keyboard.append([InlineKeyboardButton("🔙 VOLVER", callback_data='inicio')])
-    
-    query.edit_message_text(
-        "⭐ **VALORA TUS PEDIDOS**\n\n"
-        "Selecciona un pedido para valorar tu experiencia:\n\n"
-        "_Tu opinión nos ayuda a mejorar nuestro servicio._",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode='Markdown'
-    )
-
-def mostrar_valoracion_pedido(update: Update, context: CallbackContext, pedido_id):
-    """Muestra las opciones de valoración para un pedido específico"""
-    query = update.callback_query
-    query.answer()
-    
-    # Obtener información del pedido
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT productos, fecha FROM pedidos WHERE id = ?", (pedido_id,))
-    pedido = c.fetchone()
-    conn.close()
-    
-    if not pedido:
-        query.edit_message_text("❌ Pedido no encontrado")
-        return
-    
-    productos = pedido[0]
-    fecha = datetime.fromisoformat(pedido[1]).strftime("%d/%m/%Y a las %H:%M")
-    
-    # Acortar productos si es muy largo
-    if len(productos) > 40:
-        productos_display = productos[:37] + "..."
-    else:
-        productos_display = productos
-    
-    mensaje = (
-        f"⭐ **VALORAR PEDIDO #{pedido_id}**\n\n"
-        f"📅 *Fecha:* {fecha}\n"
-        f"🍽️ *Pedido:* {productos_display}\n\n"
-        f"*¿Cómo calificarías tu experiencia?*"
-    )
-    
-    # Botones de valoración
-    keyboard = [
-        [
-            InlineKeyboardButton("⭐", callback_data=f"puntuar_{pedido_id}_1"),
-            InlineKeyboardButton("⭐⭐", callback_data=f"puntuar_{pedido_id}_2"),
-            InlineKeyboardButton("⭐⭐⭐", callback_data=f"puntuar_{pedido_id}_3")
-        ],
-        [
-            InlineKeyboardButton("⭐⭐⭐⭐", callback_data=f"puntuar_{pedido_id}_4"),
-            InlineKeyboardButton("⭐⭐⭐⭐⭐", callback_data=f"puntuar_{pedido_id}_5")
-        ],
-        [InlineKeyboardButton("🔙 VOLVER", callback_data='valorar_menu')]
-    ]
-    
-    query.edit_message_text(
-        mensaje,
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode='Markdown'
-    )
-
-def procesar_valoracion(update: Update, context: CallbackContext, pedido_id, estrellas):
-    """Procesa la valoración del usuario"""
-    query = update.callback_query
-    query.answer()
-    
-    user_id = query.from_user.id
-    
-    # Guardar valoración
-    guardar_valoracion(pedido_id, user_id, estrellas)
-    
-    # Mensaje de agradecimiento
-    mensajes = [
-        "🌟 ¡Gracias por tu valoración! Tu opinión es muy importante para nosotros.",
-        "⭐ ¡Excelente! Nos alegra que hayas disfrutado de nuestro servicio.",
-        "🤫 ¡Shhh...! Gracias por confiar en Knock Twice. Tu valoración nos ayuda a mejorar.",
-        "🍕 ¡Perfecto! Esperamos verte pronto de nuevo por aquí."
-    ]
-    
-    import random
-    mensaje_agradecimiento = random.choice(mensajes)
-    
-    # Mostrar valoración promedio actualizada
-    valoracion_promedio = obtener_valoracion_promedio()
-    
-    query.edit_message_text(
-        f"✅ **¡VALORACIÓN REGISTRADA!**\n\n"
-        f"{mensaje_agradecimiento}\n\n"
-        f"⭐ *Has dado {estrellas} estrellas al pedido #{pedido_id}*\n"
-        f"📊 *Valoración promedio actual: {valoracion_promedio}/5*\n\n"
-        f"¿Qué quieres hacer ahora?",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🍽️ HACER OTRO PEDIDO", callback_data='menu_principal')],
-            [InlineKeyboardButton("⭐ VALORAR OTRO PEDIDO", callback_data='valorar_menu')],
-            [InlineKeyboardButton("🏠 INICIO", callback_data='inicio')]
-        ]),
-        parse_mode='Markdown'
-    )
-
-# --- HANDLERS DE FAQ ---
-def faq_menu(update: Update, context: CallbackContext):
-    """Muestra el menú de preguntas frecuentes"""
-    if update.callback_query:
-        query = update.callback_query
-        query.answer()
-        mensaje_func = query.edit_message_text
-    else:
-        mensaje_func = update.message.reply_text
-    
-    # Crear teclado con todas las preguntas
-    keyboard = []
-    fila_temp = []
-    
-    for i, (key, faq) in enumerate(FAQ.items()):
-        fila_temp.append(InlineKeyboardButton(faq["pregunta"], callback_data=f"faq_{key}"))
-        
-        # Agrupar en filas de 2 botones
-        if len(fila_temp) == 2 or i == len(FAQ) - 1:
-            keyboard.append(fila_temp)
-            fila_temp = []
-    
-    # Botones de navegación
-    keyboard.append([InlineKeyboardButton("📊 FAQ MÁS CONSULTADOS", callback_data='faq_populares')])
-    keyboard.append([
-        InlineKeyboardButton("🍽️ VER CARTA", callback_data='menu_principal'),
-        InlineKeyboardButton("🏠 INICIO", callback_data='inicio')
-    ])
-    
-    mensaje_func(
-        "❓ **PREGUNTAS FRECUENTES**\n\n"
-        "Selecciona una pregunta para ver la respuesta:\n\n"
-        "_Tenemos respuestas para las dudas más comunes sobre nuestro servicio._",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode='Markdown'
-    )
-
-def mostrar_faq(update: Update, context: CallbackContext, faq_key):
-    """Muestra la respuesta de una FAQ específica"""
-    query = update.callback_query
-    query.answer()
-    
-    if faq_key not in FAQ:
-        query.edit_message_text("❌ Pregunta no encontrada")
-        return
-    
-    # Registrar la consulta para estadísticas
-    registrar_consulta_faq(FAQ[faq_key]["pregunta"])
-    
-    faq = FAQ[faq_key]
-    
-    query.edit_message_text(
-        f"{faq['respuesta']}\n\n"
-        f"_¿Te ha resuelto la duda?_",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ SÍ", callback_data='faq_util_si'),
-             InlineKeyboardButton("❌ NO", callback_data='faq_util_no')],
-            [InlineKeyboardButton("🔙 VOLVER A FAQ", callback_data='faq_menu')],
-            [InlineKeyboardButton("🏠 INICIO", callback_data='inicio')]
-        ]),
-        parse_mode='Markdown'
-    )
-
-def faq_populares(update: Update, context: CallbackContext):
-    """Muestra las FAQ más consultadas"""
-    query = update.callback_query
-    query.answer()
-    
-    # Obtener estadísticas de FAQ
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT pregunta, veces_preguntada FROM faq_stats ORDER BY veces_preguntada DESC LIMIT 5")
-    populares = c.fetchall()
-    conn.close()
-    
-    if not populares:
-        mensaje = "📊 *AÚN NO HAY ESTADÍSTICAS DE FAQ*\n\nTodavía no se han consultado preguntas frecuentes."
-    else:
-        mensaje = "📊 **FAQ MÁS CONSULTADOS**\n\n"
-        for i, (pregunta, veces) in enumerate(populares, 1):
-            # Encontrar la clave de la FAQ
-            faq_key = None
-            for key, faq_info in FAQ.items():
-                if faq_info["pregunta"] == pregunta:
-                    faq_key = key
-                    break
-            
-            if faq_key:
-                icono = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
-                mensaje += f"{icono} *{veces} consultas:* {pregunta}\n\n"
-    
-    query.edit_message_text(
-        mensaje,
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔙 VOLVER A FAQ", callback_data='faq_menu')],
-            [InlineKeyboardButton("🏠 INICIO", callback_data='inicio')]
-        ]),
-        parse_mode='Markdown'
-    )
-
-def feedback_faq(update: Update, context: CallbackContext, util):
-    """Procesa el feedback de utilidad de una FAQ"""
-    query = update.callback_query
-    query.answer()
-    
-    if util == 'si':
-        mensaje = "✅ *¡Gracias por tu feedback!*\n\nNos alegra haber resuelto tu duda."
-    else:
-        mensaje = "❌ *Lamentamos no haberte ayudado.*\n\n¿Podrías escribirnos tu duda por mensaje? ¡Te ayudaremos personalmente!"
-    
-    query.edit_message_text(
-        mensaje,
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("✍️ ESCRIBIR MENSAJE", callback_data='contactar_soporte')],
-            [InlineKeyboardButton("🔙 VOLVER A FAQ", callback_data='faq_menu')],
-            [InlineKeyboardButton("🏠 INICIO", callback_data='inicio')]
-        ]),
-        parse_mode='Markdown'
-    )
-
-# --- HANDLERS DE MENÚ Y PEDIDOS (igual que antes, simplificados) ---
 def menu_principal(update: Update, context: CallbackContext, query=None):
+    """Muestra el menú principal"""
     keyboard = [
         [InlineKeyboardButton("🍕 PIZZAS", callback_data='cat_pizzas')],
         [InlineKeyboardButton("🍔 BURGERS", callback_data='cat_burgers')],
@@ -705,6 +445,7 @@ def menu_principal(update: Update, context: CallbackContext, query=None):
         update.message.reply_text(mensaje, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
 def mostrar_categoria(update: Update, context: CallbackContext, categoria):
+    """Muestra productos de una categoría"""
     query = update.callback_query
     query.answer()
     
@@ -720,12 +461,13 @@ def mostrar_categoria(update: Update, context: CallbackContext, categoria):
     keyboard.append([InlineKeyboardButton("🔙 VOLVER AL MENÚ", callback_data='menu_principal')])
     
     query.edit_message_text(
-        f"👇 **{categoria_info['titulo']}**\n\nSelecciona un producto para ver detalles:",
+        f"👇 **{categoria_info['titulo']}**\n\nSelecciona un producto:",
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode='Markdown'
     )
 
 def mostrar_info_producto(update: Update, context: CallbackContext, categoria, producto_id):
+    """Muestra información del producto con alérgenos"""
     query = update.callback_query
     query.answer()
     
@@ -759,6 +501,7 @@ def mostrar_info_producto(update: Update, context: CallbackContext, categoria, p
     query.edit_message_text(mensaje, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
 def añadir_al_carrito(update: Update, context: CallbackContext, categoria, producto_id, cantidad):
+    """Añade productos al carrito"""
     query = update.callback_query
     query.answer()
     
@@ -786,6 +529,7 @@ def añadir_al_carrito(update: Update, context: CallbackContext, categoria, prod
     )
 
 def ver_carrito(update: Update, context: CallbackContext, query=None):
+    """Muestra el carrito"""
     carrito = context.user_data.get('carrito', [])
     
     if not carrito:
@@ -829,6 +573,7 @@ def ver_carrito(update: Update, context: CallbackContext, query=None):
         update.message.reply_text(mensaje, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
 def pedir_direccion(update: Update, context: CallbackContext):
+    """Solicita la dirección"""
     query = update.callback_query
     query.answer()
     
@@ -842,6 +587,7 @@ def pedir_direccion(update: Update, context: CallbackContext):
     )
 
 def procesar_direccion(update: Update, context: CallbackContext):
+    """Procesa la dirección ingresada"""
     if not context.user_data.get('esperando_direccion', False):
         return
     
@@ -874,12 +620,12 @@ def procesar_direccion(update: Update, context: CallbackContext):
     
     update.message.reply_text(
         "❌ **NO HAY HORARIOS DISPONIBLES**\n\n"
-        "Lo sentimos, no quedan horarios disponibles para hoy.\n"
-        "Por favor, intenta mañana.",
+        "Lo sentimos, no quedan horarios disponibles para hoy.",
         parse_mode='Markdown'
     )
 
 def confirmar_hora(update: Update, context: CallbackContext, hora_elegida):
+    """Confirma el pedido con la hora seleccionada"""
     query = update.callback_query
     query.answer()
     
@@ -890,7 +636,7 @@ def confirmar_hora(update: Update, context: CallbackContext, hora_elegida):
         query.edit_message_text(
             f"⏳ **¡UPS!**\n\n"
             f"Mientras seleccionabas la hora, alguien más ha hecho un pedido.\n"
-            f"Debes esperar {minutos_restantes} minutos antes de intentarlo de nuevo.",
+            f"Debes esperar {minutos_restantes} minutos.",
             parse_mode='Markdown'
         )
         return
@@ -962,11 +708,12 @@ def confirmar_hora(update: Update, context: CallbackContext, hora_elegida):
         f"💰 *Total:* {total}€\n\n"
         f"Cocina ha recibido tu comanda.\n"
         f"¡Gracias por confiar en Knock Twice! 🤫\n\n"
-        f"⭐ *Recuerda:* Puedes valorar tu pedido después de recibirlo.",
+        f"⭐ *Recuerda:* Puedes valorar tu pedido después con /valorar",
         parse_mode='Markdown'
     )
 
 def vaciar_carrito(update: Update, context: CallbackContext):
+    """Vacía el carrito"""
     query = update.callback_query
     query.answer()
     
@@ -975,7 +722,7 @@ def vaciar_carrito(update: Update, context: CallbackContext):
     
     query.edit_message_text(
         "🗑️ **CESTA VACIADA**\n\n"
-        "Tu carrito ha sido vaciado. ¿Qué quieres hacer ahora?",
+        "Tu carrito ha sido vaciado.",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🍽️ VER CARTA", callback_data='menu_principal')],
             [InlineKeyboardButton("🏠 INICIO", callback_data='inicio')]
@@ -983,39 +730,319 @@ def vaciar_carrito(update: Update, context: CallbackContext):
         parse_mode='Markdown'
     )
 
-# --- COMANDOS DE TEXTO ---
-def comando_menu(update: Update, context: CallbackContext):
-    menu_principal(update, context)
-
-def comando_pedido(update: Update, context: CallbackContext):
-    ver_carrito(update, context)
-
-def comando_faq(update: Update, context: CallbackContext):
-    faq_menu(update, context)
-
-def comando_valorar(update: Update, context: CallbackContext):
-    valorar_menu(update, context)
-
-def comando_ayuda(update: Update, context: CallbackContext):
-    ayuda_text = (
-        "🆘 **AYUDA DE KNOCK TWICE**\n\n"
-        "*Comandos disponibles:*\n"
-        "• /start - Iniciar el bot\n"
-        "• /menu - Ver la carta\n"
-        "• /pedido - Ver tu carrito\n"
-        "• /faq - Preguntas frecuentes\n"
-        "• /valorar - Valorar pedidos\n"
-        "• /ayuda - Esta información\n\n"
+# ============ HANDLERS DE VALORACIONES ============
+def valorar_menu(update: Update, context: CallbackContext):
+    """Menú de valoraciones"""
+    query = update.callback_query
+    query.answer()
+    
+    user_id = query.from_user.id
+    pedidos_sin_valorar = obtener_pedidos_sin_valorar(user_id)
+    
+    if not pedidos_sin_valorar:
+        query.edit_message_text(
+            "⭐ **NO HAY PEDIDOS PENDIENTES DE VALORAR**\n\n"
+            "¡Gracias por tu apoyo!",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🍽️ HACER PEDIDO", callback_data='menu_principal')],
+                [InlineKeyboardButton("🏠 INICIO", callback_data='inicio')]
+            ]),
+            parse_mode='Markdown'
+        )
+        return
+    
+    keyboard = []
+    for pedido in pedidos_sin_valorar:
+        pedido_id = pedido[0]
+        productos = pedido[1]
+        if len(productos) > 30:
+            productos = productos[:27] + "..."
         
-        "📍 Entregamos en Bilbao centro\n"
-        "⏰ Viernes a Domingo\n"
-        "📞 Contacto: +34 600 000 000\n\n"
-        "Usa los botones para navegar fácilmente."
+        keyboard.append([
+            InlineKeyboardButton(f"📦 Pedido #{pedido_id}", callback_data=f"valorar_pedido_{pedido_id}")
+        ])
+    
+    keyboard.append([InlineKeyboardButton("🔙 VOLVER", callback_data='inicio')])
+    
+    query.edit_message_text(
+        "⭐ **VALORA TUS PEDIDOS**\n\n"
+        "Selecciona un pedido para valorar:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='Markdown'
+    )
+
+def mostrar_valoracion_pedido(update: Update, context: CallbackContext, pedido_id):
+    """Muestra opciones de valoración"""
+    query = update.callback_query
+    query.answer()
+    
+    mensaje = f"⭐ **VALORAR PEDIDO #{pedido_id}**\n\n¿Cómo calificarías tu experiencia?"
+    
+    keyboard = [
+        [
+            InlineKeyboardButton("⭐", callback_data=f"puntuar_{pedido_id}_1"),
+            InlineKeyboardButton("⭐⭐", callback_data=f"puntuar_{pedido_id}_2"),
+            InlineKeyboardButton("⭐⭐⭐", callback_data=f"puntuar_{pedido_id}_3")
+        ],
+        [
+            InlineKeyboardButton("⭐⭐⭐⭐", callback_data=f"puntuar_{pedido_id}_4"),
+            InlineKeyboardButton("⭐⭐⭐⭐⭐", callback_data=f"puntuar_{pedido_id}_5")
+        ],
+        [InlineKeyboardButton("🔙 VOLVER", callback_data='valorar_menu')]
+    ]
+    
+    query.edit_message_text(mensaje, reply_markup=InlineKeyboardMarkup(keyboard))
+
+def procesar_valoracion(update: Update, context: CallbackContext, pedido_id, estrellas):
+    """Procesa la valoración"""
+    query = update.callback_query
+    query.answer()
+    
+    user_id = query.from_user.id
+    guardar_valoracion(pedido_id, user_id, estrellas)
+    
+    valoracion_promedio = obtener_valoracion_promedio()
+    
+    query.edit_message_text(
+        f"✅ **¡VALORACIÓN REGISTRADA!**\n\n"
+        f"⭐ Has dado {estrellas} estrellas\n"
+        f"📊 Valoración promedio: {valoracion_promedio}/5\n\n"
+        f"¡Gracias por tu opinión!",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🍽️ HACER OTRO PEDIDO", callback_data='menu_principal')],
+            [InlineKeyboardButton("🏠 INICIO", callback_data='inicio')]
+        ]),
+        parse_mode='Markdown'
+    )
+
+# ============ HANDLERS DE FAQ ============
+def faq_menu(update: Update, context: CallbackContext):
+    """Menú de FAQ"""
+    if update.callback_query:
+        query = update.callback_query
+        query.answer()
+        mensaje_func = query.edit_message_text
+    else:
+        mensaje_func = update.message.reply_text
+    
+    keyboard = []
+    for key, faq in FAQ.items():
+        keyboard.append([InlineKeyboardButton(faq["pregunta"], callback_data=f"faq_{key}")])
+    
+    keyboard.append([
+        InlineKeyboardButton("🍽️ VER CARTA", callback_data='menu_principal'),
+        InlineKeyboardButton("🏠 INICIO", callback_data='inicio')
+    ])
+    
+    mensaje_func(
+        "❓ **PREGUNTAS FRECUENTES**\n\nSelecciona una pregunta:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='Markdown'
+    )
+
+def mostrar_faq(update: Update, context: CallbackContext, faq_key):
+    """Muestra una FAQ específica"""
+    query = update.callback_query
+    query.answer()
+    
+    if faq_key not in FAQ:
+        query.edit_message_text("❌ Pregunta no encontrada")
+        return
+    
+    registrar_consulta_faq(FAQ[faq_key]["pregunta"])
+    faq = FAQ[faq_key]
+    
+    query.edit_message_text(
+        f"{faq['respuesta']}\n\n"
+        f"_¿Te ha resuelto la duda?_",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ SÍ", callback_data='faq_util_si'),
+             InlineKeyboardButton("❌ NO", callback_data='faq_util_no')],
+            [InlineKeyboardButton("🔙 VOLVER A FAQ", callback_data='faq_menu')]
+        ]),
+        parse_mode='Markdown'
+    )
+
+def feedback_faq(update: Update, context: CallbackContext, util):
+    """Procesa feedback de FAQ"""
+    query = update.callback_query
+    query.answer()
+    
+    if util == 'si':
+        mensaje = "✅ ¡Gracias por tu feedback!"
+    else:
+        mensaje = "❌ Lamentamos no haberte ayudado."
+    
+    query.edit_message_text(
+        mensaje,
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 VOLVER A FAQ", callback_data='faq_menu')],
+            [InlineKeyboardButton("🏠 INICIO", callback_data='inicio')]
+        ]),
+        parse_mode='Markdown'
+    )
+
+# ============ HANDLERS DE ADMINISTRADOR ============
+def admin_panel(update: Update, context: CallbackContext):
+    """Panel de administración"""
+    user_id = update.effective_user.id
+    
+    if not es_admin(user_id):
+        update.message.reply_text("❌ No tienes permisos de administrador.")
+        return
+    
+    keyboard = [
+        [InlineKeyboardButton("📊 ESTADÍSTICAS", callback_data='admin_stats')],
+        [InlineKeyboardButton("📦 PEDIDOS RECIENTES", callback_data='admin_pedidos')],
+        [InlineKeyboardButton("👥 USUARIOS CON COOLDOWN", callback_data='admin_cooldown')],
+        [InlineKeyboardButton("🔄 RESET COOLDOWNS", callback_data='admin_reset_cooldown')],
+        [InlineKeyboardButton("🏠 VOLVER AL INICIO", callback_data='inicio')]
+    ]
+    
+    update.message.reply_text(
+        "🔧 **PANEL DE ADMINISTRACIÓN**\n\nSelecciona una opción:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+def mostrar_estadisticas(update: Update, context: CallbackContext):
+    """Muestra estadísticas"""
+    query = update.callback_query
+    user_id = query.from_user.id
+    
+    if not es_admin(user_id):
+        query.answer("❌ No tienes permisos")
+        return
+    
+    query.answer()
+    
+    stats = obtener_estadisticas()
+    
+    mensaje = (
+        "📊 **ESTADÍSTICAS DEL SISTEMA**\n\n"
+        "📅 *HOY:*\n"
+        f"• Pedidos: {stats['hoy']['pedidos']}\n"
+        f"• Ventas: {stats['hoy']['ventas']:.2f}€\n\n"
+        
+        "📈 *TOTAL HISTÓRICO:*\n"
+        f"• Pedidos: {stats['historico']['pedidos']}\n"
+        f"• Ventas: {stats['historico']['ventas']:.2f}€\n\n"
+        
+        "👥 *USUARIOS ACTIVOS (7 días):* {}\n".format(stats['usuarios_activos']) +
+        f"⭐ *VALORACIÓN PROMEDIO:* {stats['valoracion_promedio']}/5\n\n"
+        
+        f"⏰ *Hora:* {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}"
     )
     
-    update.message.reply_text(ayuda_text, parse_mode='Markdown')
+    keyboard = [
+        [InlineKeyboardButton("🔄 ACTUALIZAR", callback_data='admin_stats')],
+        [InlineKeyboardButton("🔙 PANEL ADMIN", callback_data='admin_panel')]
+    ]
+    
+    query.edit_message_text(mensaje, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
-# --- HANDLER DE BOTONES PRINCIPAL ---
+def mostrar_pedidos_recientes(update: Update, context: CallbackContext):
+    """Muestra pedidos recientes"""
+    query = update.callback_query
+    user_id = query.from_user.id
+    
+    if not es_admin(user_id):
+        query.answer("❌ No tienes permisos")
+        return
+    
+    query.answer()
+    
+    pedidos = obtener_pedidos_recientes()
+    
+    if not pedidos:
+        mensaje = "📭 No hay pedidos recientes."
+    else:
+        mensaje = "📦 **PEDIDOS RECIENTES**\n\n"
+        
+        for i, pedido in enumerate(pedidos, 1):
+            estado_icono = "✅" if pedido['estado'] == 'entregado' else "🔄"
+            mensaje += (
+                f"{i}. *#{pedido['id']}* {estado_icono}\n"
+                f"   👤 {pedido['username']}\n"
+                f"   🍽️ {pedido['productos'][:30]}...\n"
+                f"   💰 {pedido['total']}€ • {pedido['fecha']}\n\n"
+            )
+    
+    keyboard = [
+        [InlineKeyboardButton("🔄 ACTUALIZAR", callback_data='admin_pedidos')],
+        [InlineKeyboardButton("🔙 PANEL ADMIN", callback_data='admin_panel')]
+    ]
+    
+    query.edit_message_text(mensaje, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+
+def mostrar_usuarios_cooldown(update: Update, context: CallbackContext):
+    """Muestra usuarios con cooldown"""
+    query = update.callback_query
+    user_id = query.from_user.id
+    
+    if not es_admin(user_id):
+        query.answer("❌ No tienes permisos")
+        return
+    
+    query.answer()
+    
+    usuarios = obtener_usuarios_con_cooldown()
+    
+    if not usuarios:
+        mensaje = "👥 **NO HAY USUARIOS CON COOLDOWN**"
+    else:
+        mensaje = f"⏳ **USUARIOS CON COOLDOWN** ({len(usuarios)})\n\n"
+        
+        for i, usuario in enumerate(usuarios[:10], 1):
+            mensaje += (
+                f"{i}. 👤 {usuario['username']}\n"
+                f"   ⏰ Espera: {usuario['minutos_restantes']} min\n\n"
+            )
+    
+    keyboard = [
+        [InlineKeyboardButton("🔄 RESETEAR TODOS", callback_data='admin_reset_cooldown_confirm')],
+        [InlineKeyboardButton("🔄 ACTUALIZAR", callback_data='admin_cooldown')],
+        [InlineKeyboardButton("🔙 PANEL ADMIN", callback_data='admin_panel')]
+    ]
+    
+    query.edit_message_text(mensaje, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+
+def reset_cooldown_handler(update: Update, context: CallbackContext):
+    """Maneja reset de cooldowns"""
+    query = update.callback_query
+    user_id = query.from_user.id
+    
+    if not es_admin(user_id):
+        query.answer("❌ No tienes permisos")
+        return
+    
+    query.answer()
+    
+    if query.data == 'admin_reset_cooldown_confirm':
+        keyboard = [
+            [InlineKeyboardButton("✅ SÍ, RESETEAR", callback_data='admin_reset_cooldown_execute')],
+            [InlineKeyboardButton("❌ CANCELAR", callback_data='admin_cooldown')]
+        ]
+        
+        query.edit_message_text(
+            "⚠️ **CONFIRMAR RESET DE COOLDOWNS**\n\n"
+            "¿Estás seguro de resetear TODOS los cooldowns?",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='Markdown'
+        )
+    
+    elif query.data == 'admin_reset_cooldown_execute':
+        resetear_cooldowns()
+        
+        query.edit_message_text(
+            "✅ **COOLDOWNS RESETEADOS**\n\n"
+            "Todos los usuarios pueden hacer pedidos ahora.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 PANEL ADMIN", callback_data='admin_panel')]
+            ]),
+            parse_mode='Markdown'
+        )
+
+# ============ HANDLER DE BOTONES PRINCIPAL ============
 def button_handler(update: Update, context: CallbackContext):
     query = update.callback_query
     data = query.data
@@ -1028,42 +1055,19 @@ def button_handler(update: Update, context: CallbackContext):
         start(update, context)
         query.message.delete()
     
-    elif data == 'faq_menu':
-        faq_menu(update, context)
+    elif data == 'ver_carrito':
+        ver_carrito(update, context, query)
     
-    elif data == 'faq_populares':
-        faq_populares(update, context)
+    elif data == 'tramitar_pedido':
+        pedir_direccion(update, context)
     
-    elif data.startswith('faq_'):
-        if data.startswith('faq_util_'):
-            util = data.split('_')[2]
-            feedback_faq(update, context, util)
-        else:
-            faq_key = data.split('_')[1]
-            mostrar_faq(update, context, faq_key)
+    elif data == 'pedir_direccion':
+        pedir_direccion(update, context)
     
-    elif data == 'valorar_menu':
-        valorar_menu(update, context)
+    elif data == 'vaciar_carrito':
+        vaciar_carrito(update, context)
     
-    elif data.startswith('valorar_pedido_'):
-        pedido_id = int(data.split('_')[2])
-        mostrar_valoracion_pedido(update, context, pedido_id)
-    
-    elif data.startswith('puntuar_'):
-        partes = data.split('_')
-        pedido_id = int(partes[1])
-        estrellas = int(partes[2])
-        procesar_valoracion(update, context, pedido_id, estrellas)
-    
-    elif data == 'contactar_soporte':
-        query.edit_message_text(
-            "✍️ **CONTACTA CON SOPORTE**\n\n"
-            "Escribe tu pregunta o problema aquí mismo:\n\n"
-            "_Un miembro de nuestro equipo te responderá lo antes posible._",
-            parse_mode='Markdown'
-        )
-    
-    # Menú y pedidos (igual que antes)
+    # Categorías y productos
     elif data.startswith('cat_'):
         categoria = data.split('_')[1]
         mostrar_categoria(update, context, categoria)
@@ -1081,38 +1085,111 @@ def button_handler(update: Update, context: CallbackContext):
         cantidad = partes[3]
         añadir_al_carrito(update, context, categoria, producto_id, cantidad)
     
-    elif data == 'ver_carrito':
-        ver_carrito(update, context, query)
-    
-    elif data == 'tramitar_pedido':
-        pedir_direccion(update, context)
-    
-    elif data == 'pedir_direccion':
-        pedir_direccion(update, context)
-    
     elif data.startswith('hora_'):
         hora = data.split('_')[1]
         confirmar_hora(update, context, hora)
     
-    elif data == 'vaciar_carrito':
-        vaciar_carrito(update, context)
+    # FAQ
+    elif data == 'faq_menu':
+        faq_menu(update, context)
+    
+    elif data.startswith('faq_'):
+        if data.startswith('faq_util_'):
+            util = data.split('_')[2]
+            feedback_faq(update, context, util)
+        else:
+            faq_key = data.split('_')[1]
+            mostrar_faq(update, context, faq_key)
+    
+    # Valoraciones
+    elif data == 'valorar_menu':
+        valorar_menu(update, context)
+    
+    elif data.startswith('valorar_pedido_'):
+        pedido_id = int(data.split('_')[2])
+        mostrar_valoracion_pedido(update, context, pedido_id)
+    
+    elif data.startswith('puntuar_'):
+        partes = data.split('_')
+        pedido_id = int(partes[1])
+        estrellas = int(partes[2])
+        procesar_valoracion(update, context, pedido_id, estrellas)
+    
+    # Administrador
+    elif data == 'admin_panel':
+        admin_panel(update, context)
+    
+    elif data == 'admin_stats':
+        mostrar_estadisticas(update, context)
+    
+    elif data == 'admin_pedidos':
+        mostrar_pedidos_recientes(update, context)
+    
+    elif data == 'admin_cooldown':
+        mostrar_usuarios_cooldown(update, context)
+    
+    elif data in ['admin_reset_cooldown', 'admin_reset_cooldown_confirm', 'admin_reset_cooldown_execute']:
+        reset_cooldown_handler(update, context)
     
     else:
         query.answer("Opción no disponible")
 
-# --- MANEJADOR DE MENSAJES DE TEXTO ---
+# ============ HANDLER DE MENSAJES ============
 def handle_message(update: Update, context: CallbackContext):
+    """Maneja mensajes de texto"""
     if context.user_data.get('esperando_direccion', False):
         procesar_direccion(update, context)
     else:
         comando_ayuda(update, context)
 
-# --- SERVIDOR WEB PARA RENDER ---
+# ============ COMANDOS DE TEXTO ============
+def comando_menu(update: Update, context: CallbackContext):
+    """Comando /menu"""
+    menu_principal(update, context)
+
+def comando_pedido(update: Update, context: CallbackContext):
+    """Comando /pedido"""
+    ver_carrito(update, context)
+
+def comando_faq(update: Update, context: CallbackContext):
+    """Comando /faq"""
+    faq_menu(update, context)
+
+def comando_valorar(update: Update, context: CallbackContext):
+    """Comando /valorar"""
+    valorar_menu(update, context)
+
+def comando_admin(update: Update, context: CallbackContext):
+    """Comando /admin"""
+    admin_panel(update, context)
+
+def comando_ayuda(update: Update, context: CallbackContext):
+    """Comando /ayuda"""
+    ayuda_text = (
+        "🆘 **AYUDA DE KNOCK TWICE**\n\n"
+        "*Comandos disponibles:*\n"
+        "• /start - Iniciar el bot\n"
+        "• /menu - Ver la carta\n"
+        "• /pedido - Ver tu carrito\n"
+        "• /faq - Preguntas frecuentes\n"
+        "• /valorar - Valorar pedidos\n"
+        "• /admin - Panel administrador\n"
+        "• /ayuda - Esta información\n\n"
+        
+        "📍 Entregamos en Bilbao centro\n"
+        "⏰ Viernes a Domingo\n"
+        "📞 Contacto: +34 600 000 000\n\n"
+        "¡Usa los botones para navegar fácilmente!"
+    )
+    
+    update.message.reply_text(ayuda_text, parse_mode='Markdown')
+
+# ============ SERVIDOR WEB ============
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Knock Twice Bot v3 - FAQ y Valoraciones")
+        self.wfile.write(b"Knock Twice Bot - Online")
     
     def log_message(self, format, *args):
         pass
@@ -1124,6 +1201,7 @@ def start_server():
     server.serve_forever()
 
 def keep_alive():
+    """Mantiene activo el servicio"""
     while True:
         try:
             time.sleep(300)
@@ -1133,8 +1211,9 @@ def keep_alive():
             print("⚠️  Error en ping")
             pass
 
-# --- FUNCIÓN PRINCIPAL ---
+# ============ FUNCIÓN PRINCIPAL ============
 def main():
+    # Inicializar base de datos
     init_db()
     
     if not TOKEN:
@@ -1142,30 +1221,41 @@ def main():
         print("ℹ️ Configura la variable TELEGRAM_TOKEN en Render")
         return
     
+    # Iniciar servidor web
     server_thread = threading.Thread(target=start_server, daemon=True)
     server_thread.start()
     
+    # Iniciar keep-alive
     keepalive_thread = threading.Thread(target=keep_alive, daemon=True)
     keepalive_thread.start()
     
+    # Crear bot
     updater = Updater(TOKEN, use_context=True)
     dp = updater.dispatcher
     
+    # Añadir handlers
     dp.add_handler(CommandHandler("start", start))
     dp.add_handler(CommandHandler("menu", comando_menu))
     dp.add_handler(CommandHandler("pedido", comando_pedido))
     dp.add_handler(CommandHandler("faq", comando_faq))
     dp.add_handler(CommandHandler("valorar", comando_valorar))
+    dp.add_handler(CommandHandler("admin", comando_admin))
     dp.add_handler(CommandHandler("ayuda", comando_ayuda))
+    
     dp.add_handler(CallbackQueryHandler(button_handler))
     dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
     
-    print("🤖 Bot Knock Twice v3 iniciado")
-    print("✅ Sistema de FAQ completo (10 preguntas)")
-    print("✅ Sistema de valoraciones con estadísticas")
-    print("✅ Base de datos mejorada")
-    print("✅ Servidor web activo")
+    print("🤖 Bot Knock Twice COMPLETO iniciado")
+    print(f"🔧 Admins: {ADMIN_IDS}")
+    print("✅ Todas las funcionalidades activas")
+    print("✅ Panel de administrador listo")
+    print("✅ Sistema de valoraciones activo")
+    print("✅ FAQ completo")
+    print("✅ Sistema de alérgenos")
+    print("✅ Cooldown de 30 minutos")
+    print("⏰ Bot listo para recibir pedidos")
     
+    # Iniciar polling
     updater.start_polling()
     updater.idle()
 
