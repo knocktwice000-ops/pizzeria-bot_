@@ -1,5 +1,3 @@
-import logging
-import asyncio
 import os
 import sqlite3
 import threading
@@ -8,1146 +6,291 @@ import requests
 from datetime import datetime, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, CallbackQueryHandler, MessageHandler, filters
+from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageHandler, Filters, CallbackContext
 
-# --- CONFIGURACIÓN ---
+# --- CONFIGURACIÓN SIMPLIFICADA ---
 ID_GRUPO_PEDIDOS = "-5151917747"
-URL_RENDER = "https://knock-twice.onrender.com" 
-ADMIN_IDS = [123456789]  # Reemplaza con tus IDs de administrador
+TOKEN = os.environ.get("TELEGRAM_TOKEN")
+MODO_PRUEBAS = True
 
-# 🔧 MODO PRUEBAS (True = Abre siempre / False = Respeta horario real)
-MODO_PRUEBAS = True 
-
-# --- 1. BASE DE DATOS SQLite ---
-def init_database():
-    """Inicializa la base de datos SQLite"""
-    conn = sqlite3.connect('knocktwice.db', check_same_thread=False)
+# --- BASE DE DATOS SIMPLIFICADA ---
+def init_db():
+    conn = sqlite3.connect('knocktwice.db')
     c = conn.cursor()
-    
-    # Tabla de pedidos
     c.execute('''CREATE TABLE IF NOT EXISTS pedidos
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 (id INTEGER PRIMARY KEY,
                   user_id INTEGER,
                   username TEXT,
                   productos TEXT,
                   total REAL,
-                  direccion TEXT,
-                  hora_entrega TEXT,
-                  estado TEXT DEFAULT 'pendiente',
-                  fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                  valoracion INTEGER DEFAULT 0)''')
-    
-    # Tabla de usuarios (para cooldown y puntos)
-    c.execute('''CREATE TABLE IF NOT EXISTS usuarios
-                 (user_id INTEGER PRIMARY KEY,
-                  username TEXT,
-                  ultimo_pedido TIMESTAMP,
-                  puntos INTEGER DEFAULT 0,
-                  total_gastado REAL DEFAULT 0)''')
-    
-    # Tabla de valoraciones
-    c.execute('''CREATE TABLE IF NOT EXISTS valoraciones
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  pedido_id INTEGER,
-                  user_id INTEGER,
-                  estrellas INTEGER,
-                  comentario TEXT,
-                  fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-    
-    conn.commit()
-    conn.close()
-    print("✅ Base de datos inicializada")
-
-def get_db_connection():
-    """Obtiene conexión a la base de datos"""
-    conn = sqlite3.connect('knocktwice.db', check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-# --- 2. SISTEMA DE COOLDOWN ---
-def verificar_cooldown(user_id):
-    """Verifica si el usuario puede hacer otro pedido"""
-    conn = get_db_connection()
-    c = conn.cursor()
-    
-    c.execute("SELECT ultimo_pedido FROM usuarios WHERE user_id = ?", (user_id,))
-    resultado = c.fetchone()
-    conn.close()
-    
-    if resultado and resultado['ultimo_pedido']:
-        ultimo_pedido = datetime.fromisoformat(resultado['ultimo_pedido'])
-        tiempo_transcurrido = datetime.now() - ultimo_pedido
-        
-        if tiempo_transcurrido < timedelta(minutes=30):
-            minutos_restantes = 30 - int(tiempo_transcurrido.total_seconds() / 60)
-            return False, minutos_restantes
-    
-    return True, 0
-
-def actualizar_ultimo_pedido(user_id, username):
-    """Actualiza la hora del último pedido del usuario"""
-    conn = get_db_connection()
-    c = conn.cursor()
-    
-    # Insertar o actualizar usuario
-    c.execute('''INSERT OR REPLACE INTO usuarios (user_id, username, ultimo_pedido) 
-                 VALUES (?, ?, ?)''', 
-              (user_id, username, datetime.now().isoformat()))
-    
+                  fecha TEXT)''')
     conn.commit()
     conn.close()
 
-# --- 3. ALÉRGENOS ---
-ALERGENOS = {
-    "margarita": ["LACTEOS", "GLUTEN"],
-    "trufada": ["LACTEOS", "GLUTEN", "SETAS"],
-    "serranucula": ["LACTEOS", "GLUTEN"],
-    "amatriciana": ["LACTEOS", "GLUTEN"],
-    "pepperoni": ["LACTEOS", "GLUTEN"],
-    "classic": ["LACTEOS", "GLUTEN", "HUEVO", "MOSTAZA", "APIO", "SÉSAMO", "SOJA"],
-    "capone": ["LACTEOS", "GLUTEN", "FRUTOS_SECOS", "SÉSAMO", "SOJA"],
-    "bacon": ["LACTEOS", "GLUTEN", "MOSTAZA", "APIO", "SÉSAMO", "SOJA"],
-    "vinya": ["LACTEOS", "GLUTEN", "HUEVO"]
-}
-
-# --- 4. PREGUNTAS FRECUENTES ---
-FAQ = {
-    "horario": {
-        "pregunta": "🕒 ¿Cuál es vuestro horario?",
-        "respuesta": "Abrimos:\n• Viernes: 20:30 - 23:00\n• Sábado: 13:30 - 16:00 / 20:30 - 23:00\n• Domingo: 13:30 - 16:00 / 20:30 - 23:00"
-    },
-    "zona": {
-        "pregunta": "📍 ¿Hasta dónde entregáis?",
-        "respuesta": "Entregamos en el centro histórico y alrededores (radio de 3km). Si estás más lejos, contáctanos por privado."
-    },
-    "alergenos": {
-        "pregunta": "⚠️ ¿Tenéis información de alérgenos?",
-        "respuesta": "Sí, cada producto muestra sus alérgenos. Si tienes alergias severas, avísanos en el pedido. ¡Tu seguridad es lo primero!"
-    },
-    "vegetariano": {
-        "pregunta": "🥬 ¿Tenéis opciones vegetarianas?",
-        "respuesta": "¡Claro! Pizza Margarita, Al Capone y podemos personalizar cualquier pedido. Solo avísanos."
-    },
-    "gluten": {
-        "pregunta": "🌾 ¿Opciones sin gluten?",
-        "respuesta": "Por ahora no tenemos base sin gluten, pero estamos trabajando en ello. ¡Pronto!"
-    },
-    "tiempo": {
-        "pregunta": "⏱️ ¿Cuánto tarda el pedido?",
-        "respuesta": "Entre 30-45 minutos dependiendo de la hora. En horas pico puede tardar un poco más."
-    },
-    "pago": {
-        "pregunta": "💳 ¿Qué métodos de pago aceptáis?",
-        "respuesta": "Efectivo, Bizum (+34 600 000 000) y tarjeta a través de enlace seguro."
-    },
-    "contacto": {
-        "pregunta": "📞 ¿Cómo os contacto?",
-        "respuesta": "Por este bot o al teléfono +34 600 000 000 en horario de apertura."
-    }
-}
-
-# --- 5. SISTEMA DE VALORACIONES ---
-async def pedir_valoracion(application, user_id, pedido_id):
-    """Envía solicitud de valoración después de la entrega"""
-    await asyncio.sleep(1800)  # Esperar 30 minutos
-    
-    keyboard = [
-        [InlineKeyboardButton("⭐", callback_data=f"valorar_{pedido_id}_1"),
-         InlineKeyboardButton("⭐⭐", callback_data=f"valorar_{pedido_id}_2"),
-         InlineKeyboardButton("⭐⭐⭐", callback_data=f"valorar_{pedido_id}_3"),
-         InlineKeyboardButton("⭐⭐⭐⭐", callback_data=f"valorar_{pedido_id}_4"),
-         InlineKeyboardButton("⭐⭐⭐⭐⭐", callback_data=f"valorar_{pedido_id}_5")]
-    ]
-    
-    try:
-        await application.bot.send_message(
-            user_id,
-            "🙏 **¿CÓMO HA SIDO TU EXPERIENCIA?**\n\n"
-            "Valora tu pedido para que podamos mejorar. "
-            "¡Gracias por elegir Knock Twice! 🤫",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-    except:
-        pass  # Usuario bloqueó el bot o salió del chat
-
-def guardar_valoracion(pedido_id, user_id, estrellas, comentario=None):
-    """Guarda una valoración en la base de datos"""
-    conn = get_db_connection()
-    c = conn.cursor()
-    
-    c.execute('''INSERT INTO valoraciones (pedido_id, user_id, estrellas, comentario) 
-                 VALUES (?, ?, ?, ?)''', 
-              (pedido_id, user_id, estrellas, comentario))
-    
-    # Actualizar valoración en el pedido
-    c.execute("UPDATE pedidos SET valoracion = ? WHERE id = ?", 
-              (estrellas, pedido_id))
-    
-    conn.commit()
-    conn.close()
-
-# --- 6. FUNCIONALIDADES DE ADMINISTRADOR ---
-async def panel_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Panel de control para administradores"""
-    user_id = update.effective_user.id
-    if user_id not in ADMIN_IDS:
-        await update.message.reply_text("❌ No tienes permisos de administrador.")
-        return
-    
-    keyboard = [
-        [InlineKeyboardButton("📊 ESTADÍSTICAS HOY", callback_data='admin_stats')],
-        [InlineKeyboardButton("📈 VENTAS TOTALES", callback_data='admin_ventas')],
-        [InlineKeyboardButton("⭐ VALORACIONES", callback_data='admin_valoraciones')],
-        [InlineKeyboardButton("👤 USUARIOS ACTIVOS", callback_data='admin_usuarios')],
-        [InlineKeyboardButton("🔄 RESET COOLDOWNS", callback_data='admin_reset_cooldown')],
-        [InlineKeyboardButton("📢 ANUNCIO GLOBAL", callback_data='admin_anuncio')]
-    ]
-    
-    await update.message.reply_text(
-        "🔧 **PANEL DE ADMINISTRACIÓN**\nSelecciona una opción:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
-def obtener_estadisticas():
-    """Obtiene estadísticas para administradores"""
-    conn = get_db_connection()
-    c = conn.cursor()
-    
-    hoy = datetime.now().strftime("%Y-%m-%d")
-    
-    # Ventas de hoy
-    c.execute("SELECT COUNT(*), SUM(total) FROM pedidos WHERE DATE(fecha) = ?", (hoy,))
-    ventas_hoy = c.fetchone()
-    
-    # Total ventas
-    c.execute("SELECT COUNT(*), SUM(total) FROM pedidos")
-    ventas_totales = c.fetchone()
-    
-    # Valoración promedio
-    c.execute("SELECT AVG(valoracion) FROM pedidos WHERE valoracion > 0")
-    valoracion_promedio = c.fetchone()[0] or 0
-    
-    # Usuarios activos (últimos 7 días)
-    c.execute('''SELECT COUNT(DISTINCT user_id) FROM usuarios 
-                 WHERE date(ultimo_pedido) >= date('now', '-7 days')''')
-    usuarios_activos = c.fetchone()[0]
-    
-    conn.close()
-    
-    return {
-        'ventas_hoy': ventas_hoy,
-        'ventas_totales': ventas_totales,
-        'valoracion_promedio': round(valoracion_promedio, 1),
-        'usuarios_activos': usuarios_activos
-    }
-
-# --- 7. MENÚ (CARTA REAL) ---
-MENU_DATA = {
+# --- MENÚ SIMPLIFICADO ---
+MENU = {
     "pizzas": {
-        "titulo": "🍕 KNOCK PIZZAS",
-        "productos": {
-            "margarita": {
-                "nombre": "Margarita", 
-                "precio": 10,
-                "desc": "Tomate, mozzarella y albahaca fresca.",
-                "alergenos": ["LACTEOS", "GLUTEN"]
-            },
-            "trufada": {
-                "nombre": "Trufada", 
-                "precio": 14,
-                "desc": "Salsa de trufa, mozzarella y champiñones.",
-                "alergenos": ["LACTEOS", "GLUTEN", "SETAS"]
-            },
-            "serranucula": {
-                "nombre": "Serranúcula", 
-                "precio": 13,
-                "desc": "Tomate, mozzarella, jamón ibérico y rúcula.",
-                "alergenos": ["LACTEOS", "GLUTEN"]
-            },
-            "amatriciana": {
-                "nombre": "Amatriciana", 
-                "precio": 12,
-                "desc": "Tomate, mozzarella y bacon.",
-                "alergenos": ["LACTEOS", "GLUTEN"]
-            },
-            "pepperoni": {
-                "nombre": "Pepperoni", 
-                "precio": 11,
-                "desc": "Tomate, mozzarella y pepperoni.",
-                "alergenos": ["LACTEOS", "GLUTEN"]
-            }
+        "🍕 PIZZAS": {
+            "Margarita": 10,
+            "Trufada": 14,
+            "Serranúcula": 13,
+            "Amatriciana": 12,
+            "Pepperoni": 11
         }
     },
     "burgers": {
-        "titulo": "🍔 BURGERS",
-        "productos": {
-            "classic": {
-                "nombre": "Classic Cheese", 
-                "precio": 11,
-                "desc": "Doble carne, queso cheddar, cebolla y salsa especial.",
-                "alergenos": ["LACTEOS", "GLUTEN", "HUEVO", "MOSTAZA", "APIO", "SÉSAMO", "SOJA"]
-            },
-            "capone": {
-                "nombre": "Al Capone", 
-                "precio": 12,
-                "desc": "Queso de cabra, cebolla caramelizada y rúcula.",
-                "alergenos": ["LACTEOS", "GLUTEN", "FRUTOS_SECOS", "SÉSAMO", "SOJA"]
-            },
-            "bacon": {
-                "nombre": "Bacon BBQ", 
-                "precio": 12,
-                "desc": "Doble bacon crujiente, cheddar y salsa barbacoa.",
-                "alergenos": ["LACTEOS", "GLUTEN", "MOSTAZA", "APIO", "SÉSAMO", "SOJA"]
-            }
+        "🍔 BURGERS": {
+            "Classic Cheese": 11,
+            "Al Capone": 12,
+            "Bacon BBQ": 12
         }
     },
     "postres": {
-        "titulo": "🍰 FINAL FELIZ",
-        "productos": {
-            "vinya": {
-                "nombre": "Tarta de La Viña", 
-                "precio": 6,
-                "desc": "Nuestra tarta de queso cremosa al horno.",
-                "alergenos": ["LACTEOS", "GLUTEN", "HUEVO"]
-            }
+        "🍰 POSTRES": {
+            "Tarta de La Viña": 6
         }
     }
 }
 
-# --- 8. GESTIÓN DE HORARIOS ---
-STOCK_INICIAL = 4
-
-TURNOS = {
-    "VIERNES": {
-        "CENA": ["20:30", "21:00", "21:15", "21:30", "22:00", "22:15", "22:30"]
-    },
-    "SABADO": {
-        "COMIDA": ["13:30", "13:45", "14:00", "14:15", "14:30", "14:45", "15:00", "15:15", "15:30"],
-        "CENA":   ["20:30", "21:00", "21:15", "21:30", "22:00", "22:15", "22:30"]
-    },
-    "DOMINGO": {
-        "COMIDA": ["13:30", "13:45", "14:00", "14:15", "14:30", "14:45", "15:00", "15:15", "15:30"],
-        "CENA":   ["20:30", "21:00", "21:15", "21:30", "22:00", "22:15", "22:30"]
-    }
-}
-
-STOCK_REAL = {}
-for dia, turnos in TURNOS.items():
-    STOCK_REAL[dia] = {}
-    for nombre_turno, horas in turnos.items():
-        for h in horas:
-            STOCK_REAL[dia][h] = STOCK_INICIAL
-
-def obtener_info_tiempo():
-    ahora = datetime.utcnow() + timedelta(hours=1)
-    dia_num = ahora.weekday() 
-    hora_str = ahora.strftime("%H:%M")
-    dias = ["LUNES", "MARTES", "MIERCOLES", "JUEVES", "VIERNES", "SABADO", "DOMINGO"]
-    dia_str = dias[dia_num]
-
-    if dia_str in ["VIERNES", "SABADO", "DOMINGO"]:
-        return dia_str, hora_str, False
-    else:
-        if MODO_PRUEBAS: return "VIERNES", hora_str, False
-        else: return dia_str, hora_str, True
-
-# --- 9. MENÚ DE COMANDOS ---
-async def set_commands_menu(application):
-    """Configura el menú de comandos en Telegram"""
-    commands = [
-        ("start", "🚪 Iniciar el bot"),
-        ("menu", "🍽️ Ver el menú completo"),
-        ("pedido", "🛒 Ver mi pedido actual"),
-        ("faq", "❓ Preguntas frecuentes"),
-        ("valorar", "⭐ Valorar último pedido"),
-        ("ayuda", "ℹ️ Ayuda e información"),
-        ("admin", "🔧 Panel de administrador")
-    ]
-    
-    await application.bot.set_my_commands([
-        (command, description) for command, description in commands
-    ])
-
-# --- 10. HANDLERS PRINCIPALES MEJORADOS ---
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Comando start mejorado con cooldown check"""
-    dia, hora, cerrado = obtener_info_tiempo()
-    user_id = update.effective_user.id
-    
-    # Verificar cooldown
-    puede_pedir, minutos_restantes = verificar_cooldown(user_id)
-    
-    if not puede_pedir:
-        await update.message.reply_text(
-            f"⏳ **ESPERA REQUERIDA**\n\n"
-            f"Para garantizar la mejor calidad, debes esperar {minutos_restantes} minutos "
-            f"antes de hacer otro pedido.\n\n"
-            f"¡Gracias por tu comprensión! 🤫",
-            parse_mode='Markdown'
-        )
-        return
-    
-    if cerrado:
-        await update.message.reply_text(
-            f"⛔ **KNOCK TWICE CERRADO**\n\nHOY ES {dia}.\nAbrimos Viernes Noche, Sábado y Domingo.",
-            parse_mode='Markdown'
-        )
-        return
-
-    if 'carrito' not in context.user_data:
-        context.user_data['carrito'] = []
-    context.user_data['esperando_direccion'] = False
-
-    # Mensaje de bienvenida mejorado
-    welcome_text = (
-        "🚪 *BIENVENIDO A KNOCK TWICE* 🤫\n\n"
-        "🍕 *Pizza & Burgers de autor*\n"
-        "📍 *Solo en Bilbao centro*\n\n"
-        "*¿Qué deseas hacer?*"
-    )
-    
-    keyboard = [
-        [InlineKeyboardButton("🍽️ VER CARTA", callback_data='menu_categorias')],
-        [InlineKeyboardButton("🛒 MI PEDIDO", callback_data='ver_carrito')],
-        [InlineKeyboardButton("❓ FAQ", callback_data='faq_menu')],
-        [InlineKeyboardButton("⭐ VALORAR", callback_data='valorar_menu')]
-    ]
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text(
-        welcome_text, 
-        reply_markup=reply_markup,
-        parse_mode='Markdown'
+# --- HANDLERS SIMPLIFICADOS ---
+def start(update: Update, context: CallbackContext):
+    user = update.effective_user
+    update.message.reply_text(
+        f"🚪 ¡Hola {user.first_name}! Bienvenido a Knock Twice 🤫\n\n"
+        "Usa /menu para ver la carta\n"
+        "Usa /pedido para ver tu carrito\n"
+        "Usa /ayuda para más información"
     )
 
-async def comando_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Comando /menu directo"""
-    await update.message.reply_text(
-        "🍽️ *ACCEDIENDO AL MENÚ...*",
-        parse_mode='Markdown'
-    )
-    # Redirigir al menú de categorías
-    keyboard = [
-        [InlineKeyboardButton("🍕 PIZZAS", callback_data='cat_pizzas')],
-        [InlineKeyboardButton("🍔 BURGERS", callback_data='cat_burgers')],
-        [InlineKeyboardButton("🍰 POSTRES", callback_data='cat_postres')],
-        [InlineKeyboardButton("🛒 TRAMITAR PEDIDO", callback_data='ver_carrito')],
-        [InlineKeyboardButton("❓ FAQ", callback_data='faq_menu')],
-        [InlineKeyboardButton("🔙 Inicio", callback_data='inicio')]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text(
-        "📂 *SELECCIONA CATEGORÍA:*", 
-        reply_markup=reply_markup,
-        parse_mode='Markdown'
-    )
-
-async def comando_faq(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Comando /faq para preguntas frecuentes"""
+def menu(update: Update, context: CallbackContext):
     keyboard = []
-    for key, faq in FAQ.items():
-        keyboard.append([InlineKeyboardButton(faq["pregunta"], callback_data=f"faq_{key}")])
+    for categoria, productos in MENU.items():
+        for nombre_cat, items in productos.items():
+            keyboard.append([InlineKeyboardButton(nombre_cat, callback_data=f"cat_{categoria}")])
     
-    keyboard.append([InlineKeyboardButton("🔙 Menú principal", callback_data='inicio')])
+    keyboard.append([InlineKeyboardButton("🛒 Ver mi pedido", callback_data="ver_carrito")])
     
-    await update.message.reply_text(
-        "❓ *PREGUNTAS FRECUENTES*\n\nSelecciona una pregunta:",
+    update.message.reply_text(
+        "🍽️ **NUESTRA CARTA**\nSelecciona una categoría:",
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode='Markdown'
     )
 
-async def comando_pedido(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Comando /pedido para ver el carrito"""
-    carrito = context.user_data.get('carrito', [])
-    if not carrito:
-        texto = "🛒 *TU CESTA ESTÁ VACÍA*"
-        keyboard = [[InlineKeyboardButton("🍽️ Ir a la Carta", callback_data='menu_categorias')]]
-        await update.message.reply_text(
-            texto, 
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode='Markdown'
-        )
-    else:
-        total = sum(p['precio'] for p in carrito)
-        texto = "📝 *TU PEDIDO:*\n\n"
-        
-        conteo = {}
-        for item in carrito:
-            nombre = item['nombre']
-            precio = item['precio']
-            if nombre in conteo: conteo[nombre]['cantidad'] += 1
-            else: conteo[nombre] = {'cantidad': 1, 'precio': precio}
-        
-        for nombre, info in conteo.items():
-            subtotal = info['cantidad'] * info['precio']
-            texto += f"▪️ {info['cantidad']}x {nombre} ... {subtotal}€\n"
-        
-        texto += f"\n💰 *TOTAL:* {total}€\n\n"
-        texto += "👇 Para terminar, necesitamos tu dirección."
-        keyboard = [
-            [InlineKeyboardButton("📍 PONER DIRECCIÓN", callback_data='pedir_direccion_flow')],
-            [InlineKeyboardButton("🗑️ Borrar todo", callback_data='borrar_carrito')],
-            [InlineKeyboardButton("🔙 Seguir pidiendo", callback_data='menu_categorias')]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text(
-            texto, 
-            reply_markup=reply_markup,
-            parse_mode='Markdown'
-        )
-
-async def comando_ayuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Comando /ayuda con información útil"""
-    ayuda_text = (
-        "🆘 *AYUDA DE KNOCK TWICE*\n\n"
-        "*Comandos disponibles:*\n"
-        "• /start - Iniciar el bot\n"
-        "• /menu - Ver la carta completa\n"
-        "• /pedido - Ver tu pedido actual\n"
-        "• /faq - Preguntas frecuentes\n"
-        "• /valorar - Valorar último pedido\n"
-        "• /ayuda - Esta información\n\n"
-        
-        "*Información importante:*\n"
-        "• Tiempo de entrega: 30-45 min\n"
-        "• Mínimo de pedido: No hay\n"
-        "• Zona de reparto: Centro Bilbao\n"
-        "• Contacto: +34 600 000 000\n\n"
-        
-        "*Cooldown:* 30 min entre pedidos\n\n"
-        "¿Necesitas más ayuda? Escríbenos aquí."
-    )
-    
-    await update.message.reply_text(ayuda_text, parse_mode='Markdown')
-
-async def comando_valorar(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Comando /valorar para valorar pedido"""
-    conn = get_db_connection()
-    c = conn.cursor()
-    
-    # Buscar último pedido del usuario sin valorar
-    c.execute('''SELECT id FROM pedidos 
-                 WHERE user_id = ? AND valoracion = 0 
-                 ORDER BY fecha DESC LIMIT 1''',
-              (update.effective_user.id,))
-    
-    pedido = c.fetchone()
-    conn.close()
-    
-    if pedido:
-        pedido_id = pedido['id']
-        keyboard = [
-            [InlineKeyboardButton("⭐", callback_data=f"valorar_{pedido_id}_1"),
-             InlineKeyboardButton("⭐⭐", callback_data=f"valorar_{pedido_id}_2"),
-             InlineKeyboardButton("⭐⭐⭐", callback_data=f"valorar_{pedido_id}_3"),
-             InlineKeyboardButton("⭐⭐⭐⭐", callback_data=f"valorar_{pedido_id}_4"),
-             InlineKeyboardButton("⭐⭐⭐⭐⭐", callback_data=f"valorar_{pedido_id}_5")]
-        ]
-        
-        await update.message.reply_text(
-            "⭐ *VALORA TU ÚLTIMO PEDIDO*\n\n"
-            "¿Cómo calificarías tu experiencia con Knock Twice?",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode='Markdown'
-        )
-    else:
-        await update.message.reply_text(
-            "ℹ️ No encontramos pedidos pendientes de valorar.\n"
-            "¡Gracias por tu apoyo! 🤫",
-            parse_mode='Markdown'
-        )
-
-# --- 11. HANDLER DE BOTONES MEJORADO ---
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def button_handler(update: Update, context: CallbackContext):
     query = update.callback_query
-    await query.answer()
+    query.answer()
     data = query.data
-
-    # --- FAQ ---
-    if data == 'faq_menu':
+    
+    if data.startswith("cat_"):
+        categoria = data.split("_")[1]
+        productos = MENU[categoria]
+        
         keyboard = []
-        for key, faq in FAQ.items():
-            keyboard.append([InlineKeyboardButton(faq["pregunta"], callback_data=f"faq_{key}")])
-        keyboard.append([InlineKeyboardButton("🔙 Inicio", callback_data='inicio')])
-        
-        await query.edit_message_text(
-            "❓ *PREGUNTAS FRECUENTES*\nSelecciona:",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode='Markdown'
-        )
-        return
-    
-    elif data.startswith('faq_'):
-        faq_key = data.split('_')[1]
-        if faq_key in FAQ:
-            respuesta = FAQ[faq_key]["respuesta"]
-            keyboard = [[InlineKeyboardButton("🔙 Volver a FAQ", callback_data='faq_menu')]]
-            await query.edit_message_text(
-                f"*{FAQ[faq_key]['pregunta']}*\n\n{respuesta}",
-                reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode='Markdown'
-            )
-        return
-    
-    # --- VALORACIONES ---
-    elif data == 'valorar_menu':
-        conn = get_db_connection()
-        c = conn.cursor()
-        
-        # Buscar último pedido del usuario sin valorar
-        c.execute('''SELECT id FROM pedidos 
-                     WHERE user_id = ? AND valoracion = 0 
-                     ORDER BY fecha DESC LIMIT 1''',
-                  (query.from_user.id,))
-        
-        pedido = c.fetchone()
-        conn.close()
-        
-        if pedido:
-            pedido_id = pedido['id']
-            keyboard = [
-                [InlineKeyboardButton("⭐", callback_data=f"valorar_{pedido_id}_1"),
-                 InlineKeyboardButton("⭐⭐", callback_data=f"valorar_{pedido_id}_2"),
-                 InlineKeyboardButton("⭐⭐⭐", callback_data=f"valorar_{pedido_id}_3"),
-                 InlineKeyboardButton("⭐⭐⭐⭐", callback_data=f"valorar_{pedido_id}_4"),
-                 InlineKeyboardButton("⭐⭐⭐⭐⭐", callback_data=f"valorar_{pedido_id}_5")]
-            ]
-            
-            await query.edit_message_text(
-                "⭐ *VALORA TU ÚLTIMO PEDIDO*\n\n"
-                "¿Cómo calificarías tu experiencia con Knock Twice?",
-                reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode='Markdown'
-            )
-        else:
-            await query.edit_message_text(
-                "ℹ️ No encontramos pedidos pendientes de valorar.\n"
-                "¡Gracias por tu apoyo! 🤫",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔙 Inicio", callback_data='inicio')]
+        for nombre_cat, items in productos.items():
+            for producto, precio in items.items():
+                keyboard.append([
+                    InlineKeyboardButton(f"➕ {producto} - {precio}€", 
+                    callback_data=f"add_{categoria}_{producto}_{precio}")
                 ])
-            )
-        return
-    
-    elif data.startswith('valorar_'):
-        partes = data.split('_')
-        pedido_id = int(partes[1])
-        estrellas = int(partes[2])
         
-        guardar_valoracion(pedido_id, query.from_user.id, estrellas)
+        keyboard.append([InlineKeyboardButton("🔙 Volver", callback_data="volver_menu")])
         
-        await query.edit_message_text(
-            f"✅ ¡Gracias por tu valoración de {estrellas} estrellas!\n\n"
-            f"Tu opinión nos ayuda a mejorar. ¡Hasta la próxima! 🤫",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🍽️ Hacer otro pedido", callback_data='inicio')]
-            ])
-        )
-        return
-    
-    # --- ADMIN PANEL ---
-    elif data == 'admin_stats':
-        if query.from_user.id not in ADMIN_IDS:
-            return
-        
-        stats = obtener_estadisticas()
-        
-        mensaje = (
-            "📊 *ESTADÍSTICAS DEL DÍA*\n\n"
-            f"• Pedidos hoy: {stats['ventas_hoy'][0] or 0}\n"
-            f"• Ingresos hoy: {stats['ventas_hoy'][1] or 0:.2f}€\n"
-            f"• Pedidos totales: {stats['ventas_totales'][0] or 0}\n"
-            f"• Ingresos totales: {stats['ventas_totales'][1] or 0:.2f}€\n"
-            f"• Valoración promedio: {stats['valoracion_promedio']} ⭐\n"
-            f"• Usuarios activos (7 días): {stats['usuarios_activos']}\n\n"
-            f"📅 {datetime.now().strftime('%d/%m/%Y %H:%M')}"
-        )
-        
-        await query.edit_message_text(
-            mensaje,
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔄 Actualizar", callback_data='admin_stats')],
-                [InlineKeyboardButton("🔙 Panel Admin", callback_data='admin_panel')]
-            ]),
-            parse_mode='Markdown'
-        )
-        return
-    
-    elif data == 'admin_panel':
-        keyboard = [
-            [InlineKeyboardButton("📊 ESTADÍSTICAS HOY", callback_data='admin_stats')],
-            [InlineKeyboardButton("📈 VENTAS TOTALES", callback_data='admin_ventas')],
-            [InlineKeyboardButton("⭐ VALORACIONES", callback_data='admin_valoraciones')],
-            [InlineKeyboardButton("👤 USUARIOS ACTIVOS", callback_data='admin_usuarios')],
-            [InlineKeyboardButton("🔄 RESET COOLDOWNS", callback_data='admin_reset_cooldown')],
-            [InlineKeyboardButton("📢 ANUNCIO GLOBAL", callback_data='admin_anuncio')]
-        ]
-        
-        await query.edit_message_text(
-            "🔧 **PANEL DE ADMINISTRACIÓN**\nSelecciona una opción:",
+        query.edit_message_text(
+            f"Selecciona un producto:",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
-        return
     
-    elif data == 'admin_reset_cooldown':
-        if query.from_user.id not in ADMIN_IDS:
+    elif data.startswith("add_"):
+        # Añadir al carrito
+        partes = data.split("_")
+        producto = partes[2]
+        precio = partes[3]
+        
+        if 'carrito' not in context.user_data:
+            context.user_data['carrito'] = []
+        
+        context.user_data['carrito'].append(f"{producto} - {precio}€")
+        
+        query.answer(f"✅ {producto} añadido al carrito")
+    
+    elif data == "ver_carrito":
+        carrito = context.user_data.get('carrito', [])
+        if not carrito:
+            texto = "🛒 Tu carrito está vacío"
+        else:
+            texto = "📝 **TU PEDIDO:**\n\n"
+            total = 0
+            for item in carrito:
+                texto += f"• {item}\n"
+                # Extraer precio del formato "Producto - 10€"
+                try:
+                    precio = float(item.split("- ")[1].replace("€", ""))
+                    total += precio
+                except:
+                    pass
+            
+            texto += f"\n💰 **TOTAL: {total}€**"
+        
+        keyboard = [
+            [InlineKeyboardButton("🍽️ Seguir pidiendo", callback_data="volver_menu")],
+            [InlineKeyboardButton("🗑️ Vaciar carrito", callback_data="vaciar_carrito")]
+        ]
+        
+        if carrito:
+            keyboard.insert(0, [InlineKeyboardButton("✅ Confirmar pedido", callback_data="confirmar")])
+        
+        query.edit_message_text(
+            texto,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='Markdown'
+        )
+    
+    elif data == "volver_menu":
+        # Volver al menú principal
+        keyboard = []
+        for categoria, productos in MENU.items():
+            for nombre_cat, items in productos.items():
+                keyboard.append([InlineKeyboardButton(nombre_cat, callback_data=f"cat_{categoria}")])
+        
+        keyboard.append([InlineKeyboardButton("🛒 Ver mi pedido", callback_data="ver_carrito")])
+        
+        query.edit_message_text(
+            "🍽️ **NUESTRA CARTA**\nSelecciona una categoría:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='Markdown'
+        )
+    
+    elif data == "vaciar_carrito":
+        context.user_data['carrito'] = []
+        query.edit_message_text("🗑️ Carrito vaciado")
+    
+    elif data == "confirmar":
+        carrito = context.user_data.get('carrito', [])
+        if not carrito:
+            query.edit_message_text("❌ El carrito está vacío")
             return
         
-        conn = get_db_connection()
+        # Guardar en base de datos
+        conn = sqlite3.connect('knocktwice.db')
         c = conn.cursor()
-        c.execute("UPDATE usuarios SET ultimo_pedido = NULL")
+        
+        productos_str = ", ".join(carrito)
+        user = query.from_user
+        
+        c.execute('''INSERT INTO pedidos (user_id, username, productos, total, fecha)
+                     VALUES (?, ?, ?, ?, ?)''',
+                  (user.id, user.username, productos_str, 0, datetime.now().isoformat()))
+        
         conn.commit()
         conn.close()
         
-        await query.answer("✅ Cooldowns reseteados para todos los usuarios", show_alert=True)
-        return
-    
-    # --- PRODUCTOS CON ALÉRGENOS ---
-    elif data.startswith('info_alergenos_'):
-        producto_id = data.split('_')[2]
-        categoria = data.split('_')[3]
-        
-        producto = MENU_DATA[categoria]['productos'][producto_id]
-        alergenos = producto.get('alergenos', [])
-        
-        if alergenos:
-            texto_alergenos = "⚠️ *ALÉRGENOS:* " + ", ".join(alergenos)
-            await query.answer(texto_alergenos, show_alert=True)
-        else:
-            await query.answer("✅ Sin alérgenos comunes", show_alert=True)
-        return
-    
-    # --- SELECTOR DE CANTIDAD CON ALÉRGENOS ---
-    elif data.startswith('sel_qty:'):
-        _, id_prod, categoria = data.split(':')
-        producto = MENU_DATA[categoria]['productos'][id_prod]
-        
-        descripcion = producto.get("desc", "Delicioso y casero.")
-        alergenos = producto.get('alergenos', [])
-        
-        # Botón de información de alérgenos
-        info_button = [InlineKeyboardButton(
-            "⚠️ VER ALÉRGENOS", 
-            callback_data=f"info_alergenos_{id_prod}_{categoria}"
-        )]
-        
-        keyboard = [
-            info_button,
-            [InlineKeyboardButton("1", callback_data=f"add_mult:1:{id_prod}:{categoria}"),
-             InlineKeyboardButton("2", callback_data=f"add_mult:2:{id_prod}:{categoria}"),
-             InlineKeyboardButton("3", callback_data=f"add_mult:3:{id_prod}:{categoria}")],
-            [InlineKeyboardButton("4", callback_data=f"add_mult:4:{id_prod}:{categoria}"),
-             InlineKeyboardButton("5", callback_data=f"add_mult:5:{id_prod}:{categoria}")],
-            [InlineKeyboardButton("🔙 Volver", callback_data=f"cat_{categoria}")]
-        ]
-        
-        mensaje_producto = (
-            f"🍽️ **{producto['nombre']}**\n"
-            f"_{descripcion}_\n\n"
-            f"💰 Precio: {producto['precio']}€\n"
-            f"🔢 **¿Cuántas quieres?**"
-        )
-        
-        if alergenos:
-            mensaje_producto += f"\n\n⚠️ *Contiene:* {', '.join(alergenos)}"
-        
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(mensaje_producto, reply_markup=reply_markup, parse_mode='Markdown')
-        return
-    
-    # --- NAVEGACIÓN PRINCIPAL ---
-    if data == 'menu_categorias':
-        keyboard = [
-            [InlineKeyboardButton("🍕 PIZZAS", callback_data='cat_pizzas')],
-            [InlineKeyboardButton("🍔 BURGERS", callback_data='cat_burgers')],
-            [InlineKeyboardButton("🍰 POSTRES", callback_data='cat_postres')],
-            [InlineKeyboardButton("🛒 TRAMITAR PEDIDO", callback_data='ver_carrito')],
-            [InlineKeyboardButton("❓ FAQ", callback_data='faq_menu')],
-            [InlineKeyboardButton("🔙 Inicio", callback_data='inicio')]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text("📂 *SELECCIONA CATEGORÍA:*", reply_markup=reply_markup, parse_mode='Markdown')
-
-    elif data.startswith('cat_'):
-        categoria = data.split('_')[1]
-        info_cat = MENU_DATA[categoria]
-        keyboard = []
-        for id_prod, info in info_cat['productos'].items():
-            texto = f"{info['nombre']} ({info['precio']}€)"
-            keyboard.append([InlineKeyboardButton(texto, callback_data=f"sel_qty:{id_prod}:{categoria}")])
-        keyboard.append([InlineKeyboardButton("🔙 Volver", callback_data='menu_categorias')])
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(f"👇 *{info_cat['titulo']}*", reply_markup=reply_markup, parse_mode='Markdown')
-    
-    elif data.startswith('add_mult:'):
-        partes = data.split(':')
-        cantidad = int(partes[1])
-        id_prod = partes[2]
-        categoria = partes[3]
-        
-        producto = MENU_DATA[categoria]['productos'][id_prod]
-        
-        if 'carrito' not in context.user_data: 
-            context.user_data['carrito'] = []
-        for _ in range(cantidad):
-            context.user_data['carrito'].append(producto)
-        
-        keyboard = [
-            [InlineKeyboardButton("🔙 Seguir Pidiendo", callback_data=f'cat_{categoria}')],
-            [InlineKeyboardButton("🚀 CONTINUAR (Dirección)", callback_data='pedir_direccion_flow')]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(
-            f"✅ Añadidas **{cantidad} x {producto['nombre']}** a la cesta.", 
-            reply_markup=reply_markup, 
-            parse_mode='Markdown'
-        )
-    
-    elif data == 'ver_carrito':
-        carrito = context.user_data.get('carrito', [])
-        if not carrito:
-            texto = "🛒 *TU CESTA ESTÁ VACÍA*"
-            keyboard = [[InlineKeyboardButton("🍽️ Ir a la Carta", callback_data='menu_categorias')]]
-            await query.edit_message_text(
-                texto, 
-                reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode='Markdown'
-            )
-        else:
-            total = sum(p['precio'] for p in carrito)
-            texto = "📝 *TU PEDIDO:*\n\n"
-            
-            conteo = {}
-            for item in carrito:
-                nombre = item['nombre']
-                precio = item['precio']
-                if nombre in conteo: conteo[nombre]['cantidad'] += 1
-                else: conteo[nombre] = {'cantidad': 1, 'precio': precio}
-            
-            for nombre, info in conteo.items():
-                subtotal = info['cantidad'] * info['precio']
-                texto += f"▪️ {info['cantidad']}x {nombre} ... {subtotal}€\n"
-            
-            texto += f"\n💰 *TOTAL:* {total}€\n\n"
-            texto += "👇 Para terminar, necesitamos tu dirección."
-            keyboard = [
-                [InlineKeyboardButton("📍 PONER DIRECCIÓN", callback_data='pedir_direccion_flow')],
-                [InlineKeyboardButton("🗑️ Borrar todo", callback_data='borrar_carrito')],
-                [InlineKeyboardButton("🔙 Seguir pidiendo", callback_data='menu_categorias')]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await query.edit_message_text(texto, reply_markup=reply_markup, parse_mode='Markdown')
-    
-    elif data == 'pedir_direccion_flow':
-        context.user_data['esperando_direccion'] = True
-        msg = "📍 *PASO 1/2: DIRECCIÓN Y TELÉFONO*\n\nEscribe aquí abajo tu dirección completa y un teléfono.\n\n✍️ Escribe ahora..."
-        keyboard = [[InlineKeyboardButton("🔙 Volver al Carrito", callback_data='ver_carrito_cancelar_dir')]]
-        await query.edit_message_text(
-            msg, 
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode='Markdown'
-        )
-    
-    elif data == 'ver_carrito_cancelar_dir':
-        context.user_data['esperando_direccion'] = False
-        await button_handler(update, context)
-    
-    elif data == 'mostrar_horas_flow':
-        await mostrar_horas_disponibles(update, context, es_edicion=True)
-    
-    elif data.startswith('sethora_'):
-        # Verificar cooldown otra vez por seguridad
-        puede_pedir, minutos_restantes = verificar_cooldown(query.from_user.id)
-        
-        if not puede_pedir:
-            await query.edit_message_text(
-                f"⏳ **ESPERA REQUERIDA**\n\n"
-                f"Debes esperar {minutos_restantes} minutos antes de hacer otro pedido.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔙 Inicio", callback_data='inicio')]
-                ])
-            )
-            return
-        
-        partes = data.split('_')
-        dia_elegido = partes[1]
-        hora_elegida = partes[2]
-        
-        if STOCK_REAL[dia_elegido][hora_elegida] > 0:
-            STOCK_REAL[dia_elegido][hora_elegida] -= 1
-            
-            carrito = context.user_data.get('carrito', [])
-            direccion = context.user_data.get('direccion', 'Sin dirección')
-            usuario = query.from_user.username or query.from_user.first_name
-            user_id_cliente = query.from_user.id 
-            
-            texto_pedido = ""
-            total = 0
-            
-            conteo = {}
-            for item in carrito:
-                if item['nombre'] in conteo: 
-                    conteo[item['nombre']] += 1
-                else: 
-                    conteo[item['nombre']] = 1
-                total += item['precio']
-            
-            for nombre, cant in conteo.items():
-                texto_pedido += f"- {cant}x {nombre}\n"
-            
-            # GUARDAR EN BASE DE DATOS
-            conn = get_db_connection()
-            c = conn.cursor()
-            
-            productos_str = ", ".join([f"{cant}x {nombre}" for nombre, cant in conteo.items()])
-            
-            c.execute('''INSERT INTO pedidos 
-                         (user_id, username, productos, total, direccion, hora_entrega, estado) 
-                         VALUES (?, ?, ?, ?, ?, ?, ?)''',
-                     (user_id_cliente, usuario, productos_str, total, direccion, 
-                      f"{dia_elegido} {hora_elegida}", "pendiente"))
-            
-            pedido_id = c.lastrowid
-            conn.commit()
-            conn.close()
-            
-            # Actualizar cooldown del usuario
-            actualizar_ultimo_pedido(user_id_cliente, usuario)
-            
-            # Programar solicitud de valoración
-            application = context.application
-            asyncio.create_task(pedir_valoracion(application, user_id_cliente, pedido_id))
-            
-            mensaje_grupo = (
-                f"🚪 **NUEVO PEDIDO #{pedido_id}** 🚪\n"
-                f"➖➖➖➖➖➖➖➖➖➖\n"
-                f"👤 Cliente: @{usuario} (ID: {user_id_cliente})\n"
-                f"📅 Día: {dia_elegido}\n"
-                f"⏰ Hora: {hora_elegida}\n"
-                f"📍 Dirección: {direccion}\n"
-                f"🍽️ Comanda:\n{texto_pedido}"
-                f"💰 Total: {total}€\n"
-                f"➖➖➖➖➖➖➖➖➖➖"
-            )
-            
-            keyboard_grupo = [[InlineKeyboardButton("🛵 AVISAR: PEDIDO EN CAMINO", callback_data=f"reparto_{user_id_cliente}")]]
-            reply_markup_grupo = InlineKeyboardMarkup(keyboard_grupo)
-
-            try:
-                await context.bot.send_message(
-                    chat_id=ID_GRUPO_PEDIDOS, 
-                    text=mensaje_grupo, 
-                    reply_markup=reply_markup_grupo
-                )
-                
-                context.user_data['carrito'] = []
-                context.user_data['direccion'] = None
-                context.user_data['ultimo_pedido_id'] = pedido_id
-                
-                await query.edit_message_text(
-                    f"✅ ¡PEDIDO #{pedido_id} CONFIRMADO!\n\n"
-                    f"*Día:* {dia_elegido}\n"
-                    f"*Hora:* {hora_elegida}\n"
-                    f"*Total:* {total}€\n\n"
-                    f"Cocina ha recibido tu comanda.\n"
-                    f"¡Gracias por confiar en Knock Twice! 🤫\n\n"
-                    f"📱 *Recuerda:* Puedes usar /pedido para ver estado.",
-                    parse_mode='Markdown'
-                )
-            except Exception as e:
-                await query.edit_message_text(f"❌ Error enviando: {e}")
-        
-        else:
-            await query.edit_message_text(
-                "❌ Esa hora acaba de ocuparse. Elige otra.", 
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔙 Ver Horas", callback_data='mostrar_horas_flow')]
-                ])
-            )
-    
-    elif data.startswith('reparto_'):
-        cliente_id_destino = data.split('_')[1]
+        # Enviar al grupo
         try:
-            await context.bot.send_message(
-                chat_id=cliente_id_destino,
-                text="🛵 **¡KNOCK TWICE INFORMA!**\n\nTu pedido ha salido de cocina y está en camino.\nPrepárate, estamos llegando. 🔥"
+            context.bot.send_message(
+                chat_id=ID_GRUPO_PEDIDOS,
+                text=f"🚪 **NUEVO PEDIDO**\n\n"
+                     f"👤 Cliente: @{user.username or user.first_name}\n"
+                     f"📦 Pedido:\n{productos_str}"
             )
-            await query.edit_message_reply_markup(
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("✅ CLIENTE AVISADO", callback_data="ignore")]
-                ])
-            )
-        except Exception as e:
-            await query.answer(f"Error al avisar: {e}", show_alert=True)
-    
-    elif data == 'borrar_carrito':
+        except:
+            pass
+        
         context.user_data['carrito'] = []
-        context.user_data['esperando_direccion'] = False
-        await query.edit_message_text(
-            "🗑️ Cesta vaciada.", 
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔙 Inicio", callback_data='inicio')]
-            ])
-        )
-    
-    elif data == 'inicio':
-        await start(update, context)
-    
-    elif data == 'ignore':
-        await query.answer("Acción no disponible")
-
-# --- 12. FUNCIÓN PARA MOSTRAR HORAS ---
-async def mostrar_horas_disponibles(update, context, es_edicion=False):
-    """Función para mostrar horas disponibles"""
-    dia_actual, hora_actual, cerrado = obtener_info_tiempo()
-    keyboard = []
-    
-    if dia_actual in TURNOS:
-        turnos_del_dia = TURNOS[dia_actual]
-        hay_huecos = False
-        for nombre_turno, lista_horas in turnos_del_dia.items():
-            horas_validas = [h for h in lista_horas if h > hora_actual]
-            if horas_validas:
-                hay_huecos = True
-                icono = "☀️" if nombre_turno == "COMIDA" else "🌙"
-                keyboard.append([InlineKeyboardButton(f"--- {icono} TURNO DE {nombre_turno} ---", callback_data='ignore')])
-                for h in horas_validas:
-                    huecos = STOCK_REAL[dia_actual][h]
-                    if huecos > 0:
-                        keyboard.append([InlineKeyboardButton(f"{h} ({huecos} huecos)", callback_data=f'sethora_{dia_actual}_{h}')])
-                    else:
-                        keyboard.append([InlineKeyboardButton(f"❌ {h} LLENO", callback_data='ignore')])
-
-        if not hay_huecos: 
-            keyboard.append([InlineKeyboardButton("❌ YA NO QUEDAN TURNOS HOY", callback_data='ignore')])
-    
-    msg = f"✅ Dirección guardada.\n\n📅 **HOY ES: {dia_actual}**\n⏰ ELIGE HORA (Solo mostramos horas futuras):"
-    
-    if es_edicion:
-        query = update.callback_query
-        await query.edit_message_text(
-            msg, 
-            reply_markup=InlineKeyboardMarkup(keyboard), 
-            parse_mode='Markdown'
-        )
-    else:
-        await update.message.reply_text(
-            msg, 
-            reply_markup=InlineKeyboardMarkup(keyboard), 
+        query.edit_message_text(
+            "✅ **¡PEDIDO CONFIRMADO!**\n\n"
+            "Hemos recibido tu pedido. En breve nos pondremos en contacto contigo.\n\n"
+            "¡Gracias por elegir Knock Twice! 🤫",
             parse_mode='Markdown'
         )
 
-# --- 13. MANEJADOR DE MENSAJES ---
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Manejador de mensajes de texto"""
-    if context.user_data.get('esperando_direccion'):
-        context.user_data['direccion'] = update.message.text
-        context.user_data['esperando_direccion'] = False 
-        await mostrar_horas_disponibles(update, context, es_edicion=False)
+def pedido(update: Update, context: CallbackContext):
+    """Ver el carrito actual"""
+    carrito = context.user_data.get('carrito', [])
+    if not carrito:
+        update.message.reply_text("🛒 Tu carrito está vacío")
     else:
-        await update.message.reply_text(
-            "ℹ️ Usa el menú de comandos (/start, /menu, /pedido, /faq) o los botones para interactuar con el bot."
-        )
+        texto = "📝 **TU PEDIDO:**\n\n"
+        for item in carrito:
+            texto += f"• {item}\n"
+        
+        update.message.reply_text(texto, parse_mode='Markdown')
 
-# --- 14. SERVIDOR Y ANTI-SLEEP ---
-class HealthCheckHandler(BaseHTTPRequestHandler):
+def ayuda(update: Update, context: CallbackContext):
+    update.message.reply_text(
+        "🆘 **AYUDA**\n\n"
+        "• /start - Iniciar bot\n"
+        "• /menu - Ver la carta\n"
+        "• /pedido - Ver tu carrito\n"
+        "• /ayuda - Esta información\n\n"
+        "📍 Entregamos en Bilbao centro\n"
+        "⏰ Viernes a Domingo: 20:30-23:00\n"
+        "📞 Contacto: +34 600 000 000",
+        parse_mode='Markdown'
+    )
+
+# --- SERVIDOR WEB PARA RENDER ---
+class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Knock Twice Bot - v14 Mejorado")
+        self.wfile.write(b"Knock Twice Bot - Online")
     
     def log_message(self, format, *args):
-        # Reducir logging para evitar spam
         pass
 
-def start_fake_server():
-    port = int(os.environ.get("PORT", 8080))
-    server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
-    print(f"✅ Servidor de salud iniciado en puerto {port}")
+def start_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(('0.0.0.0', port), HealthHandler)
+    print(f"✅ Servidor en puerto {port}")
     server.serve_forever()
 
-def mantener_despierto():
+def keep_alive():
+    """Mantiene activo el servicio"""
+    url = os.environ.get("RENDER_URL", "https://knock-twice.onrender.com")
     while True:
         try:
             time.sleep(300)  # 5 minutos
-            requests.get(URL_RENDER, timeout=10)
-            print(f"✅ Ping enviado a {URL_RENDER}")
-        except Exception as e:
-            print(f"⚠️  Error en ping: {e}")
+            requests.get(url, timeout=10)
+        except:
+            pass
 
-# --- 15. FUNCIÓN PRINCIPAL ---
-async def main():
+# --- FUNCIÓN PRINCIPAL ---
+def main():
     # Inicializar base de datos
-    init_database()
+    init_db()
     
-    # Iniciar bot
-    token = os.environ.get("TELEGRAM_TOKEN")
-    if not token:
-        print("❌ ERROR: TELEGRAM_TOKEN no configurado")
-        print("ℹ️ Configura la variable de entorno TELEGRAM_TOKEN en Render")
+    if not TOKEN:
+        print("❌ ERROR: No hay token de Telegram")
+        print("ℹ️ Configura la variable TELEGRAM_TOKEN en Render")
         return
     
-    print("🚀 Iniciando Knock Twice Bot...")
-    
-    # Crear aplicación
-    application = ApplicationBuilder().token(token).build()
-    
-    # Configurar menú de comandos
-    await set_commands_menu(application)
-    
-    # Añadir handlers
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("menu", comando_menu))
-    application.add_handler(CommandHandler("pedido", comando_pedido))
-    application.add_handler(CommandHandler("faq", comando_faq))
-    application.add_handler(CommandHandler("valorar", comando_valorar))
-    application.add_handler(CommandHandler("ayuda", comando_ayuda))
-    application.add_handler(CommandHandler("admin", panel_admin))
-    
-    application.add_handler(CallbackQueryHandler(button_handler))
-    application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
-    
-    print("✅ Bot configurado correctamente")
-    print("📋 Características activadas:")
-    print("   • Sistema de cooldown (30 min)")
-    print("   • Información de alérgenos")
-    print("   • FAQ completa")
-    print("   • Sistema de valoraciones")
-    print("   • Panel de administrador")
-    print("   • Base de datos SQLite")
-    print("   • Menú de comandos en la app")
-    
-    # Iniciar polling
-    print("🔄 Iniciando polling...")
-    await application.initialize()
-    await application.start()
-    await application.updater.start_polling()
-    
-    print("✅ Bot completamente operativo")
-    print(f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    
-    # Mantener el bot corriendo
-    try:
-        while True:
-            await asyncio.sleep(3600)
-    except KeyboardInterrupt:
-        print("\n⏹️  Deteniendo bot...")
-    finally:
-        await application.stop()
-        await application.shutdown()
-
-if __name__ == '__main__':
-    # Iniciar servidor en hilo separado
-    server_thread = threading.Thread(target=start_fake_server, daemon=True)
+    # Iniciar servidor web en hilo separado
+    server_thread = threading.Thread(target=start_server, daemon=True)
     server_thread.start()
     
-    # Iniciar anti-sleep en hilo separado
-    ping_thread = threading.Thread(target=mantener_despierto, daemon=True)
-    ping_thread.start()
+    # Iniciar keep-alive en hilo separado
+    keepalive_thread = threading.Thread(target=keep_alive, daemon=True)
+    keepalive_thread.start()
     
-    # Ejecutar bot principal
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("\n👋 Bot detenido por el usuario")
+    # Crear y configurar el bot
+    updater = Updater(TOKEN, use_context=True)
+    dp = updater.dispatcher
+    
+    # Añadir handlers
+    dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(CommandHandler("menu", menu))
+    dp.add_handler(CommandHandler("pedido", pedido))
+    dp.add_handler(CommandHandler("ayuda", ayuda))
+    dp.add_handler(CallbackQueryHandler(button_handler))
+    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, ayuda))
+    
+    print("🤖 Bot iniciado correctamente")
+    print("✅ Servidor web activo")
+    print("✅ Base de datos lista")
+    
+    # Iniciar el bot
+    updater.start_polling()
+    updater.idle()
+
+if __name__ == "__main__":
+    main()
