@@ -143,7 +143,7 @@ MENU = {
     }
 }
 
-# ============ PREGUNTAS FRECUENTES ============
+# ============ PREGUNTAS FRECUENTES (ACTUALIZADAS) ============
 FAQ = {
     "horario": {
         "pregunta": "🕒 ¿Cuál es vuestro horario?",
@@ -151,31 +151,31 @@ FAQ = {
     },
     "zona": {
         "pregunta": "📍 ¿Hasta dónde entregáis?",
-        "respuesta": "Entregamos en el centro histórico de Bilbao (radio 3km)."
+        "respuesta": "Entregamos en el área del centro y alrededores. Si tienes dudas sobre tu zona, pregunta al hacer el pedido."
     },
     "alergenos": {
         "pregunta": "⚠️ ¿Tenéis información de alérgenos?",
-        "respuesta": "Sí, cada producto muestra sus alérgenos antes de añadirlo al carrito."
+        "respuesta": "Sí, cada producto muestra sus alérgenos antes de añadirlo al carrito. Revisa siempre antes de pedir."
     },
     "vegetariano": {
         "pregunta": "🥬 ¿Opciones vegetarianas?",
-        "respuesta": "¡Claro! Pizza Margarita, Al Capone y personalizaciones."
+        "respuesta": "¡Claro! Pizza Margarita, Al Capone y podemos personalizar cualquier pedido."
     },
     "gluten": {
         "pregunta": "🌾 ¿Opciones sin gluten?",
-        "respuesta": "Actualmente no tenemos base sin gluten. ¡Pronto!"
+        "respuesta": "Actualmente no tenemos base sin gluten, pero estamos trabajando en ello."
     },
     "tiempo": {
         "pregunta": "⏱️ ¿Cuánto tarda el pedido?",
-        "respuesta": "30-45 minutos normalmente. En horas pico puede tardar más."
+        "respuesta": "30-45 minutos normalmente. En horas pico puede tardar un poco más."
     },
     "pago": {
         "pregunta": "💳 ¿Qué métodos de pago aceptáis?",
-        "respuesta": "Efectivo, Bizum (+34 600 000 000) y tarjeta."
+        "respuesta": "Aceptamos efectivo al entregar el pedido."
     },
     "contacto": {
         "pregunta": "📞 ¿Cómo os contacto?",
-        "respuesta": "Por este bot o al +34 600 000 000 en horario."
+        "respuesta": "Por este mismo bot para cualquier consulta sobre pedidos."
     }
 }
 
@@ -408,7 +408,6 @@ def start(update: Update, context: CallbackContext):
     welcome_text = (
         f"🚪 **BIENVENIDO A KNOCK TWICE** 🤫\n\n"
         f"🍕 *Pizza & Burgers de autor*\n"
-        f"📍 *Solo en Bilbao centro*\n"
         f"⭐ *Valoración: {valoracion_promedio}/5 {estrellas}*\n\n"
         f"*¿Qué deseas hacer?*"
     )
@@ -559,7 +558,7 @@ def ver_carrito(update: Update, context: CallbackContext, query=None):
             mensaje += f"▪️ {info['cantidad']}x {nombre} ... {info['subtotal']}€\n"
         
         mensaje += f"\n💰 **TOTAL:** {total}€\n\n"
-        mensaje += "👇 Para continuar, necesitamos tu dirección."
+        mensaje += "👇 Para continuar, necesitamos tu dirección de entrega."
         
         keyboard = [
             [InlineKeyboardButton("📍 PONER DIRECCIÓN", callback_data='pedir_direccion')],
@@ -580,9 +579,9 @@ def pedir_direccion(update: Update, context: CallbackContext):
     context.user_data['esperando_direccion'] = True
     
     query.edit_message_text(
-        "📍 **PASO 1/2: DIRECCIÓN Y TELÉFONO**\n\n"
-        "Por favor, escribe tu dirección completa y un número de teléfono:\n\n"
-        "✍️ _Ejemplo: Calle Gran Vía 1, 4ºB, Bilbao. Tel: 612345678_",
+        "📍 **PASO 1/2: DIRECCIÓN DE ENTREGA**\n\n"
+        "Por favor, escribe tu dirección completa para la entrega:\n\n"
+        "✍️ _Ejemplo: Calle Principal 123, Piso 2A_",
         parse_mode='Markdown'
     )
 
@@ -884,11 +883,11 @@ def feedback_faq(update: Update, context: CallbackContext, util):
 
 # ============ HANDLERS DE ADMINISTRADOR ============
 def admin_panel(update: Update, context: CallbackContext):
-    """Panel de administración"""
+    """Panel de administración (solo accesible para admins)"""
     user_id = update.effective_user.id
     
     if not es_admin(user_id):
-        update.message.reply_text("❌ No tienes permisos de administrador.")
+        update.message.reply_text("❌ Comando no disponible.")
         return
     
     keyboard = [
@@ -1115,7 +1114,7 @@ def button_handler(update: Update, context: CallbackContext):
         estrellas = int(partes[2])
         procesar_valoracion(update, context, pedido_id, estrellas)
     
-    # Administrador
+    # Administrador (solo para admins)
     elif data == 'admin_panel':
         admin_panel(update, context)
     
@@ -1142,10 +1141,23 @@ def handle_message(update: Update, context: CallbackContext):
     else:
         comando_ayuda(update, context)
 
-# ============ COMANDOS DE TEXTO ============
+# ============ COMANDOS DE TEXTO (MENÚ MEJORADO) ============
 def comando_menu(update: Update, context: CallbackContext):
-    """Comando /menu"""
-    menu_principal(update, context)
+    """Comando /menu - Muestra botones en vez de lista"""
+    keyboard = [
+        [InlineKeyboardButton("🍕 PIZZAS", callback_data='cat_pizzas')],
+        [InlineKeyboardButton("🍔 BURGERS", callback_data='cat_burgers')],
+        [InlineKeyboardButton("🍰 POSTRES", callback_data='cat_postres')],
+        [InlineKeyboardButton("🛒 VER MI PEDIDO", callback_data='ver_carrito')],
+        [InlineKeyboardButton("❓ FAQ", callback_data='faq_menu')],
+        [InlineKeyboardButton("⭐ VALORAR", callback_data='valorar_menu')]
+    ]
+    
+    update.message.reply_text(
+        "📂 **SELECCIONA UNA CATEGORÍA:**",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='Markdown'
+    )
 
 def comando_pedido(update: Update, context: CallbackContext):
     """Comando /pedido"""
@@ -1160,29 +1172,39 @@ def comando_valorar(update: Update, context: CallbackContext):
     valorar_menu(update, context)
 
 def comando_admin(update: Update, context: CallbackContext):
-    """Comando /admin"""
+    """Comando /admin - Oculto del menú pero funcional para admins"""
     admin_panel(update, context)
 
 def comando_ayuda(update: Update, context: CallbackContext):
-    """Comando /ayuda"""
+    """Comando /ayuda - Actualizado sin info de contacto específica"""
     ayuda_text = (
         "🆘 **AYUDA DE KNOCK TWICE**\n\n"
-        "*Comandos disponibles:*\n"
+        "*Para navegar usa los botones o estos comandos:*\n\n"
         "• /start - Iniciar el bot\n"
-        "• /menu - Ver la carta\n"
-        "• /pedido - Ver tu carrito\n"
+        "• /menu - Ver la carta completa\n"
+        "• /pedido - Ver tu carrito actual\n"
         "• /faq - Preguntas frecuentes\n"
-        "• /valorar - Valorar pedidos\n"
-        "• /admin - Panel administrador\n"
+        "• /valorar - Valorar tus pedidos\n"
         "• /ayuda - Esta información\n\n"
-        
-        "📍 Entregamos en Bilbao centro\n"
-        "⏰ Viernes a Domingo\n"
-        "📞 Contacto: +34 600 000 000\n\n"
-        "¡Usa los botones para navegar fácilmente!"
+        "¡Usa los botones para una navegación más fácil!"
     )
     
     update.message.reply_text(ayuda_text, parse_mode='Markdown')
+
+# ============ CONFIGURAR MENÚ DE COMANDOS CON BOTONES ============
+def set_commands_menu(updater):
+    """Configura el menú de comandos del bot (aparece al escribir /)"""
+    commands = [
+        ("start", "🚪 Iniciar el bot"),
+        ("menu", "🍽️ Ver el menú completo"),
+        ("pedido", "🛒 Ver mi pedido actual"),
+        ("faq", "❓ Preguntas frecuentes"),
+        ("valorar", "⭐ Valorar último pedido"),
+        ("ayuda", "ℹ️ Ayuda e información")
+        # Nota: /admin NO está en la lista, por lo que no aparecerá
+    ]
+    
+    updater.bot.set_my_commands(commands)
 
 # ============ SERVIDOR WEB ============
 class HealthHandler(BaseHTTPRequestHandler):
@@ -1233,26 +1255,26 @@ def main():
     updater = Updater(TOKEN, use_context=True)
     dp = updater.dispatcher
     
-    # Añadir handlers
+    # Configurar menú de comandos con botones
+    set_commands_menu(updater)
+    
+    # Añadir handlers (NOTA: /admin sigue disponible pero no aparece en el menú)
     dp.add_handler(CommandHandler("start", start))
     dp.add_handler(CommandHandler("menu", comando_menu))
     dp.add_handler(CommandHandler("pedido", comando_pedido))
     dp.add_handler(CommandHandler("faq", comando_faq))
     dp.add_handler(CommandHandler("valorar", comando_valorar))
-    dp.add_handler(CommandHandler("admin", comando_admin))
+    dp.add_handler(CommandHandler("admin", comando_admin))  # Oculto pero funcional
     dp.add_handler(CommandHandler("ayuda", comando_ayuda))
     
     dp.add_handler(CallbackQueryHandler(button_handler))
     dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
     
-    print("🤖 Bot Knock Twice COMPLETO iniciado")
-    print(f"🔧 Admins: {ADMIN_IDS}")
+    print("🤖 Bot Knock Twice MEJORADO iniciado")
+    print(f"🔧 Admins: {ADMIN_IDS} (comando /admin oculto)")
+    print("✅ Menú de comandos con botones configurado")
+    print("✅ Información de contacto actualizada")
     print("✅ Todas las funcionalidades activas")
-    print("✅ Panel de administrador listo")
-    print("✅ Sistema de valoraciones activo")
-    print("✅ FAQ completo")
-    print("✅ Sistema de alérgenos")
-    print("✅ Cooldown de 30 minutos")
     print("⏰ Bot listo para recibir pedidos")
     
     # Iniciar polling
