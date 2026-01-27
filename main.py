@@ -1236,15 +1236,22 @@ def start_server():
     server.serve_forever()
 
 def keep_alive():
-    """Mantiene activo el servicio"""
+    """Mantiene activo el servicio con un ping inicial y reintentos"""
+    url = "https://knock-twice.onrender.com" # Asegúrate de que esta URL sea la correcta
+    
+    # Pequeña espera para que el servidor HTTP suba del todo
+    time.sleep(10)
+    
     while True:
         try:
-            time.sleep(300)
-            requests.get("https://knock-twice.onrender.com", timeout=10)
-            print("✅ Ping enviado")
-        except:
-            print("⚠️  Error en ping")
-            pass
+            # Hacemos el ping
+            response = requests.get(url, timeout=15)
+            print(f"✅ Ping enviado a {url} | Status: {response.status_code}")
+        except Exception as e:
+            print(f"⚠️ Error en ping: {e}")
+        
+        # Esperar 14 minutos (Render suele dormir a los 15 min de inactividad)
+        time.sleep(840)
 
 # ============ FUNCIÓN PRINCIPAL ============
 def main():
