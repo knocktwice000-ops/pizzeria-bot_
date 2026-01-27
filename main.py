@@ -11,7 +11,7 @@ from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageH
 # ============ CONFIGURACIÓN ============
 ID_GRUPO_PEDIDOS = "-5151917747"
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
-MODO_PRUEBAS = True  # Poner en False para que el bloqueo de horario funcione
+MODO_PRUEBAS = True  # Esto debería ignorar TODAS las verificaciones de horario
 URL_PROYECTO = "https://pizzeria-bot-l4y4.onrender.com"
 NOMBRE_BOT_ALIAS = "pizzaioloo_bot"
 
@@ -237,7 +237,7 @@ def obtener_pedidos_sin_valorar(user_id):
     conn.close()
     return pedidos
 
-# ============ LÓGICA DE TIEMPO (RESTAURADA) ============
+# ============ LÓGICA DE TIEMPO (CORREGIDA PARA MODO PRUEBAS) ============
 TURNOS = {
     "VIERNES": ["20:30", "21:00", "21:15", "21:30", "22:00", "22:15", "22:30"],
     "SABADO": ["13:30", "13:45", "14:00", "14:15", "14:30", "14:45", "15:00", "15:15", "15:30", "20:30", "21:00", "21:15", "21:30", "22:00", "22:15", "22:30"],
@@ -254,22 +254,24 @@ def obtener_hora_actual():
     return ahora.strftime("%H:%M")
 
 def esta_abierto():
-    """IMPORTANTE: Si MODO_PRUEBAS es True, ignorará el reloj"""
+    """IMPORTANTE: Si MODO_PRUEBAS es True, SIEMPRE está abierto"""
     if MODO_PRUEBAS:
         return True, ""
+    
     dia = obtener_dia_actual()
     hora = obtener_hora_actual()
     
     if dia not in TURNOS:
         return False, "Estamos cerrados. Te esperamos de viernes a domingo. 🚪"
     
+    # En modo no-pruebas, solo permitir si hay horarios futuros
     futuros = [h for h in TURNOS[dia] if h > hora]
     if not futuros:
         return False, "Hoy ya hemos cerrado la cocina. Te esperamos de viernes a domingo. 🕗"
     
     return True, ""
 
-# ============ FUNCIONES ADMIN Y ESTADÍSTICAS (RESTAURADAS) ============
+# ============ FUNCIONES ADMIN Y ESTADÍSTICAS ============
 def es_admin(user_id):
     """Verifica si un usuario es administrador"""
     return user_id in ADMIN_IDS
@@ -369,39 +371,34 @@ def obtener_pedidos_recientes():
     
     return resultado
 
-# ============ HANDLERS DE MENÚ (BOTÓN INICIO ARREGLADO) ============
+# ============ HANDLERS DE MENÚ ============
 def mostrar_inicio(update: Update, context: CallbackContext, query=None):
-    """Muestra la pantalla de inicio"""
+    """Muestra la pantalla de inicio - CORREGIDO PARA MODO PRUEBAS"""
     user_id = update.effective_user.id
     
-    # Verificar cooldown
+    # Verificar cooldown (esto SÍ funciona siempre)
     puede_pedir, minutos_restantes = verificar_cooldown(user_id)
     
     if not puede_pedir:
+        mensaje = (f"⏳ **ESPERA REQUERIDA**\n\n"
+                   f"Debes esperar {minutos_restantes} minutos antes de hacer otro pedido.\n"
+                   f"¡Gracias por tu comprensión! 🤫")
+        
         if query:
-            query.edit_message_text(
-                f"⏳ **ESPERA REQUERIDA**\n\n"
-                f"Debes esperar {minutos_restantes} minutos antes de hacer otro pedido.\n"
-                f"¡Gracias por tu comprensión! 🤫",
-                parse_mode='Markdown'
-            )
+            query.edit_message_text(mensaje, parse_mode='Markdown')
         else:
-            update.message.reply_text(
-                f"⏳ **ESPERA REQUERIDA**\n\n"
-                f"Debes esperar {minutos_restantes} minutos antes de hacer otro pedido.\n"
-                f"¡Gracias por tu comprensión! 🤫",
-                parse_mode='Markdown'
-            )
+            update.message.reply_text(mensaje, parse_mode='Markdown')
         return
     
-    # Verificar si estamos abiertos
-    abierto, mensaje_cierre = esta_abierto()
-    if not abierto and not MODO_PRUEBAS:
-        if query:
-            query.edit_message_text(f"⛔ **CERRADO**\n\n{mensaje_cierre}", parse_mode='Markdown')
-        else:
-            update.message.reply_text(f"⛔ **CERRADO**\n\n{mensaje_cierre}", parse_mode='Markdown')
-        return
+    # Verificar horario (pero ignorar si MODO_PRUEBAS es True)
+    if not MODO_PRUEBAS:
+        abierto, mensaje_cierre = esta_abierto()
+        if not abierto:
+            if query:
+                query.edit_message_text(f"⛔ **CERRADO**\n\n{mensaje_cierre}", parse_mode='Markdown')
+            else:
+                update.message.reply_text(f"⛔ **CERRADO**\n\n{mensaje_cierre}", parse_mode='Markdown')
+            return
     
     # Inicializar carrito
     if 'carrito' not in context.user_data:
@@ -412,9 +409,14 @@ def mostrar_inicio(update: Update, context: CallbackContext, query=None):
     valoracion_promedio = obtener_valoracion_promedio()
     estrellas = "⭐" * int(valoracion_promedio) if valoracion_promedio > 0 else "Sin valoraciones"
     
+    if MODO_PRUEBAS:
+        modo_texto = "\n🔧 *MODO PRUEBAS ACTIVADO* - Horarios ignorados\n"
+    else:
+        modo_texto = ""
+    
     txt = (f"🚪 **BIENVENIDO A KNOCK TWICE** 🤫\n\n"
            f"🍕 *Pizza & Burgers de autor*\n"
-           f"⭐ *Valoración: {valoracion_promedio}/5 {estrellas}*\n\n"
+           f"⭐ *Valoración: {valoracion_promedio}/5 {estrellas}*{modo_texto}\n\n"
            f"*¿Qué deseas hacer?*")
     
     kb = [[InlineKeyboardButton("🍽️ VER CARTA", callback_data='menu_principal')],
@@ -515,14 +517,26 @@ def procesar_direccion(update: Update, context: CallbackContext):
     context.user_data['direccion'] = direccion
     context.user_data['esperando_direccion'] = False
     
+    # En modo pruebas, siempre mostrar horarios de hoy
     dia_actual = obtener_dia_actual()
     hora_actual = obtener_hora_actual()
     
-    if dia_actual in TURNOS:
-        horarios_disponibles = [h for h in TURNOS[dia_actual] if h > hora_actual]
+    # Si es modo pruebas O si el día está en TURNOS
+    if MODO_PRUEBAS or dia_actual in TURNOS:
+        if MODO_PRUEBAS:
+            # En modo pruebas, usar horarios del viernes o crear ficticios
+            if dia_actual in TURNOS:
+                horarios_disponibles = TURNOS[dia_actual]
+            else:
+                # Si no es un día con turnos, usar horarios de viernes
+                horarios_disponibles = TURNOS["VIERNES"]
+        else:
+            # Modo normal: solo horarios futuros
+            horarios_disponibles = [h for h in TURNOS[dia_actual] if h > hora_actual]
         
         if horarios_disponibles:
             keyboard = []
+            # Mostrar primeros 8 horarios
             for hora in horarios_disponibles[:8]:
                 keyboard.append([InlineKeyboardButton(f"🕒 {hora}", callback_data=f"hora_{hora}")])
             
@@ -532,7 +546,7 @@ def procesar_direccion(update: Update, context: CallbackContext):
                 f"✅ **Dirección guardada.**\n\n"
                 f"📅 **HOY ES: {dia_actual}**\n"
                 f"⏰ **SELECCIONA HORA DE ENTREGA:**\n"
-                f"(Solo mostramos horas futuras)",
+                f"{'(Modo pruebas - todos horarios)' if MODO_PRUEBAS else '(Solo mostramos horas futuras)'}",
                 reply_markup=InlineKeyboardMarkup(keyboard),
                 parse_mode='Markdown'
             )
@@ -603,21 +617,28 @@ def confirmar_hora(update: Update, context: CallbackContext, hora_elegida):
     
     actualizar_cooldown(usuario.id, usuario.username)
     
+    # Enviar al grupo de pedidos con botón "Pedido en camino"
     try:
+        keyboard = [[InlineKeyboardButton("🛵 PEDIDO EN CAMINO", callback_data=f"camino_{pedido_id}")]]
+        
+        mensaje_grupo = (f"🚪 **NUEVO PEDIDO #{pedido_id}** 🚪\n\n"
+                         f"👤 Cliente: @{usuario.username or usuario.first_name}\n"
+                         f"📅 Día: {dia_actual}\n"
+                         f"⏰ Hora: {hora_elegida}\n"
+                         f"📍 Dirección: {direccion}\n"
+                         f"🍽️ Comanda:\n{texto_pedido}"
+                         f"💰 Total: {total}€\n"
+                         f"➖➖➖➖➖➖➖➖➖➖")
+        
         context.bot.send_message(
             chat_id=ID_GRUPO_PEDIDOS,
-            text=f"🚪 **NUEVO PEDIDO #{pedido_id}** 🚪\n\n"
-                 f"👤 Cliente: @{usuario.username or usuario.first_name}\n"
-                 f"📅 Día: {dia_actual}\n"
-                 f"⏰ Hora: {hora_elegida}\n"
-                 f"📍 Dirección: {direccion}\n"
-                 f"🍽️ Comanda:\n{texto_pedido}"
-                 f"💰 Total: {total}€\n"
-                 f"➖➖➖➖➖➖➖➖➖➖"
+            text=mensaje_grupo,
+            reply_markup=InlineKeyboardMarkup(keyboard)
         )
     except Exception as e:
         print(f"Error enviando al grupo: {e}")
     
+    # Limpiar carrito
     context.user_data['carrito'] = []
     context.user_data['direccion'] = None
     
@@ -802,6 +823,51 @@ def feedback_faq(update: Update, context: CallbackContext, util):
         parse_mode='Markdown'
     )
 
+# ============ BOTÓN "PEDIDO EN CAMINO" (COMO EN EL ORIGINAL) ============
+def pedido_en_camino_boton(update: Update, context: CallbackContext, pedido_id):
+    """Botón para notificar que el pedido está en camino"""
+    query = update.callback_query
+    user_id = query.from_user.id
+    
+    # Solo admins pueden usar este botón
+    if not es_admin(user_id):
+        query.answer("❌ Solo para administradores", show_alert=True)
+        return
+    
+    query.answer()
+    
+    # Buscar el pedido en la base de datos
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT user_id FROM pedidos WHERE id = ?", (pedido_id,))
+    res = c.fetchone()
+    conn.close()
+    
+    if res:
+        cliente_id = res[0]
+        try:
+            # Notificar al cliente
+            context.bot.send_message(
+                chat_id=cliente_id, 
+                text=f"🛵 **¡TU PEDIDO #{pedido_id} ESTÁ EN CAMINO!**\n\n"
+                     f"Prepárate, nuestro repartidor llegará pronto.\n"
+                     f"¡Que aproveche! 🤫"
+            )
+            
+            # Actualizar el mensaje en el grupo para mostrar que se notificó
+            query.edit_message_text(
+                query.message.text + f"\n\n✅ **Notificado al cliente a las {datetime.now().strftime('%H:%M')}**",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("✅ NOTIFICADO", callback_data="ya_notificado")
+                ]])
+            )
+            
+        except Exception as e:
+            print(f"Error notificando al cliente: {e}")
+            query.answer(f"❌ Error: {str(e)[:50]}", show_alert=True)
+    else:
+        query.answer("❌ Pedido no encontrado", show_alert=True)
+
 # ============ HANDLERS DE ADMINISTRADOR ============
 def mostrar_estadisticas_admin(update: Update, context: CallbackContext):
     """Muestra estadísticas del panel admin"""
@@ -829,7 +895,8 @@ def mostrar_estadisticas_admin(update: Update, context: CallbackContext):
         "👥 *USUARIOS ACTIVOS (7 días):* {}\n".format(stats['usuarios_activos']) +
         f"⭐ *VALORACIÓN PROMEDIO:* {stats['valoracion_promedio']}/5\n\n"
         
-        f"⏰ *Hora:* {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}"
+        f"⏰ *Hora:* {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}\n"
+        f"🔧 *Modo pruebas:* {'✅ ACTIVADO' if MODO_PRUEBAS else '❌ DESACTIVADO'}"
     )
     
     keyboard = [
@@ -941,33 +1008,6 @@ def reset_cooldown_handler(update: Update, context: CallbackContext):
             parse_mode='Markdown'
         )
 
-# ============ LOGICA DE AVISO "PEDIDO EN CAMINO" (RESTAURADA) ============
-def pedido_en_camino(update: Update, context: CallbackContext):
-    """Comando para admins: /camino ID_PEDIDO"""
-    user_id = update.effective_user.id
-    if not es_admin(user_id):
-        return
-    if not context.args:
-        update.message.reply_text("Usa: /camino ID")
-        return
-    
-    pedido_id = context.args[0]
-    conn = sqlite3.connect('knocktwice.db')
-    c = conn.cursor()
-    c.execute("SELECT user_id FROM pedidos WHERE id = ?", (pedido_id,))
-    res = c.fetchone()
-    conn.close()
-    
-    if res:
-        cliente_id = res[0]
-        try:
-            context.bot.send_message(chat_id=cliente_id, text=f"🛵 **¡TU PEDIDO #{pedido_id} ESTÁ EN CAMINO!**\nPrepárate, nuestro repartidor llegará pronto. ¡Que aproveche! 🤫")
-            update.message.reply_text(f"✅ Aviso enviado al cliente del pedido #{pedido_id}")
-        except:
-            update.message.reply_text("❌ No pude enviar el mensaje al cliente.")
-    else:
-        update.message.reply_text("❌ Pedido no encontrado.")
-
 # ============ HANDLER DE BOTONES (COMPLETADO) ============
 def button_handler(update: Update, context: CallbackContext):
     query = update.callback_query
@@ -1013,11 +1053,12 @@ def button_handler(update: Update, context: CallbackContext):
         query.edit_message_text(txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
     
     elif data.startswith('add_'):
-        # BLOQUEO POR HORARIO
-        abierto, msg = esta_abierto()
-        if not abierto:
-            query.edit_message_text(f"🚫 **LO SENTIMOS**\n\n{msg}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 VOLVER", callback_data='inicio')]]))
-            return
+        # En modo pruebas NO verificar horario aquí
+        if not MODO_PRUEBAS:
+            abierto, msg = esta_abierto()
+            if not abierto:
+                query.edit_message_text(f"🚫 **LO SENTIMOS**\n\n{msg}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 VOLVER", callback_data='inicio')]]))
+                return
         
         partes = data.split('_')
         categoria = partes[1]
@@ -1075,6 +1116,14 @@ def button_handler(update: Update, context: CallbackContext):
         pedido_id = int(partes[1])
         estrellas = int(partes[2])
         procesar_valoracion(update, context, pedido_id, estrellas)
+    
+    # Botón "Pedido en camino"
+    elif data.startswith('camino_'):
+        pedido_id = int(data.split('_')[1])
+        pedido_en_camino_boton(update, context, pedido_id)
+    
+    elif data == 'ya_notificado':
+        query.answer("Ya notificado ✓")
     
     # Administrador
     elif data == 'admin_panel':
@@ -1215,7 +1264,6 @@ def main():
     dp.add_handler(CommandHandler("faq", comando_faq))
     dp.add_handler(CommandHandler("valorar", comando_valorar))
     dp.add_handler(CommandHandler("admin", comando_admin))
-    dp.add_handler(CommandHandler("camino", pedido_en_camino))
     dp.add_handler(CommandHandler("ayuda", comando_ayuda))
     
     dp.add_handler(CallbackQueryHandler(button_handler))
@@ -1223,8 +1271,10 @@ def main():
     
     print("🤖 Bot Knock Twice OPTIMIZADO iniciado")
     print(f"🔧 Admins: {ADMIN_IDS}")
+    print(f"🔧 Modo pruebas: {'✅ ACTIVADO' if MODO_PRUEBAS else '❌ DESACTIVADO'}")
     print("✅ Menú de comandos con botones configurado")
     print("✅ Web landing page activa")
+    print("✅ Botón 'Pedido en camino' restaurado")
     print("✅ Todas las funcionalidades restaurantes activas")
     print("⏰ Bot listo para recibir pedidos")
     
