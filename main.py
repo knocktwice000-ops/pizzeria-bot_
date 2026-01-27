@@ -13,7 +13,7 @@ ID_GRUPO_PEDIDOS = "-5151917747"
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 MODO_PRUEBAS = True  # Cambia a False para activar horarios reales
 URL_PROYECTO = "https://pizzeria-bot-l4y4.onrender.com"
-NOMBRE_BOT_ALIAS = "KnockTwiceBot" # Pon el alias de tu bot sin el @
+NOMBRE_BOT_ALIAS = "pizzaioloo_bot" # Pon el alias de tu bot sin el @
 
 # Configuración de administradores
 admin_ids_str = os.environ.get("ADMIN_IDS", "")
