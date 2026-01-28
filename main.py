@@ -243,16 +243,25 @@ def es_admin(user_id):
 
 # ============ HANDLERS PRINCIPALES ============
 def start(update: Update, context: CallbackContext):
-    """Comando /start - FUNCIONA CORRECTAMENTE"""
-    user = update.effective_user
-    user_id = user.id
-    
-    print(f"🚀 /start de {user.username or user.first_name} (ID: {user_id})")
+    """Comando /start - FUNCIONA CORRECTAMENTE PARA BOTONES Y COMANDOS"""
+    # Obtener user de la forma correcta
+    if update.callback_query:
+        user = update.callback_query.from_user
+        user_id = user.id
+        print(f"🔄 Botón INICIO de {user.username or user.first_name} (ID: {user_id})")
+    else:
+        user = update.effective_user
+        user_id = user.id
+        print(f"🚀 Comando /start de {user.username or user.first_name} (ID: {user_id})")
     
     # Verificar cooldown
     puede_pedir, minutos = verificar_cooldown(user_id)
     if not puede_pedir:
-        update.message.reply_text(f"⏳ Espera {minutos} minuto(s) antes de otro pedido.")
+        mensaje = f"⏳ Espera {minutos} minuto(s) antes de otro pedido."
+        if update.callback_query:
+            update.callback_query.edit_message_text(mensaje)
+        else:
+            update.message.reply_text(mensaje)
         return
     
     # Inicializar carrito
@@ -281,8 +290,18 @@ def start(update: Update, context: CallbackContext):
         kb.append([InlineKeyboardButton("🔧 PANEL ADMIN", callback_data='admin_panel')])
     
     if update.callback_query:
-        # Si viene de un botón, editar mensaje
-        update.callback_query.edit_message_text(txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
+        # Si viene de un botón, editar el mensaje existente
+        try:
+            update.callback_query.edit_message_text(txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
+        except Exception as e:
+            print(f"⚠️ Error editando mensaje: {e}")
+            # Fallback: enviar nuevo mensaje
+            context.bot.send_message(
+                chat_id=user_id,
+                text=txt,
+                reply_markup=InlineKeyboardMarkup(kb),
+                parse_mode='Markdown'
+            )
     else:
         # Si viene de comando, enviar nuevo mensaje
         update.message.reply_text(txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
@@ -863,10 +882,15 @@ def button_handler(update: Update, context: CallbackContext):
     if data == 'inicio':
         print("🔄 Botón INICIO pulsado")
         try:
+            # Llamar a start directamente con el query
             start(update, context)
+            # NO intentar borrar el mensaje anterior
         except Exception as e:
             print(f"❌ Error en inicio: {e}")
             query.answer("⏳ Cargando...")
+            # Enviar mensaje de error simple
+            query.edit_message_text("🏠 Volviendo al inicio...", 
+                                  reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 CARGAR", callback_data='inicio')]]))
     
     elif data == 'menu_principal':
         menu_principal(update, context)
