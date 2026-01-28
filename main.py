@@ -237,6 +237,15 @@ def obtener_pedidos_sin_valorar(user_id):
     conn.close()
     return pedidos
 
+# ============ ACTUALIZAR ESTADO DEL PEDIDO ============
+def actualizar_estado_pedido(pedido_id, estado):
+    """Actualiza el estado de un pedido en la base de datos"""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("UPDATE pedidos SET estado = ? WHERE id = ?", (estado, pedido_id))
+    conn.commit()
+    conn.close()
+
 # ============ LÓGICA DE TIEMPO (CORREGIDA PARA MODO PRUEBAS) ============
 TURNOS = {
     "VIERNES": ["20:30", "21:00", "21:15", "21:30", "22:00", "22:15", "22:30"],
@@ -617,9 +626,12 @@ def confirmar_hora(update: Update, context: CallbackContext, hora_elegida):
     
     actualizar_cooldown(usuario.id, usuario.username)
     
-    # Enviar al grupo de pedidos con botón "Pedido en camino"
+    # Enviar al grupo de pedidos con botones "Pedido en camino" y "Entregado"
     try:
-        keyboard = [[InlineKeyboardButton("🛵 PEDIDO EN CAMINO", callback_data=f"camino_{pedido_id}")]]
+        keyboard = [
+            [InlineKeyboardButton("🛵 PEDIDO EN CAMINO", callback_data=f"camino_{pedido_id}")],
+            [InlineKeyboardButton("✅ ENTREGADO", callback_data=f"entregado_{pedido_id}")]
+        ]
         
         mensaje_grupo = (f"🚪 **NUEVO PEDIDO #{pedido_id}** 🚪\n\n"
                          f"👤 Cliente: @{usuario.username or usuario.first_name}\n"
@@ -756,6 +768,110 @@ def procesar_valoracion(update: Update, context: CallbackContext, pedido_id, est
         parse_mode='Markdown'
     )
 
+# ============ BOTÓN "PEDIDO EN CAMINO" ============
+def pedido_en_camino_boton(update: Update, context: CallbackContext, pedido_id):
+    """Botón para notificar que el pedido está en camino"""
+    query = update.callback_query
+    user_id = query.from_user.id
+    
+    # Solo admins pueden usar este botón
+    if not es_admin(user_id):
+        query.answer("❌ Solo para administradores", show_alert=True)
+        return
+    
+    query.answer()
+    
+    # Buscar el pedido en la base de datos
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT user_id FROM pedidos WHERE id = ?", (pedido_id,))
+    res = c.fetchone()
+    conn.close()
+    
+    if res:
+        cliente_id = res[0]
+        try:
+            # Notificar al cliente
+            context.bot.send_message(
+                chat_id=cliente_id, 
+                text=f"🛵 **¡TU PEDIDO #{pedido_id} ESTÁ EN CAMINO!**\n\n"
+                     f"Prepárate, nuestro repartidor llegará pronto.\n"
+                     f"¡Que aproveche! 🤫"
+            )
+            
+            # Actualizar estado del pedido
+            actualizar_estado_pedido(pedido_id, "en_camino")
+            
+            # Actualizar el mensaje en el grupo
+            query.edit_message_text(
+                query.message.text + f"\n\n✅ **En camino a las {datetime.now().strftime('%H:%M')}**",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("✅ EN CAMINO", callback_data="ya_camino"),
+                    InlineKeyboardButton("✅ ENTREGADO", callback_data=f"entregado_{pedido_id}")
+                ]])
+            )
+            
+        except Exception as e:
+            print(f"Error notificando al cliente: {e}")
+            query.answer(f"❌ Error: {str(e)[:50]}", show_alert=True)
+    else:
+        query.answer("❌ Pedido no encontrado", show_alert=True)
+
+# ============ BOTÓN "ENTREGADO" ============
+def pedido_entregado_boton(update: Update, context: CallbackContext, pedido_id):
+    """Botón para notificar que el pedido ha sido entregado"""
+    query = update.callback_query
+    user_id = query.from_user.id
+    
+    # Solo admins pueden usar este botón
+    if not es_admin(user_id):
+        query.answer("❌ Solo para administradores", show_alert=True)
+        return
+    
+    query.answer()
+    
+    # Buscar el pedido en la base de datos
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT user_id, productos, total FROM pedidos WHERE id = ?", (pedido_id,))
+    res = c.fetchone()
+    conn.close()
+    
+    if res:
+        cliente_id = res[0]
+        productos = res[1]
+        total = res[2]
+        
+        try:
+            # Notificar al cliente que su pedido ha sido entregado
+            context.bot.send_message(
+                chat_id=cliente_id, 
+                text=f"✅ **¡TU PEDIDO #{pedido_id} HA SIDO ENTREGADO!**\n\n"
+                     f"🍽️ *Resumen:*\n{productos}\n"
+                     f"💰 *Total:* {total}€\n\n"
+                     f"⭐ *¿Cómo valorarías tu experiencia?*\n"
+                     f"Puedes valorar ahora mismo con /valorar\n\n"
+                     f"¡Gracias por elegirnos! 🤫",
+                parse_mode='Markdown'
+            )
+            
+            # Actualizar estado del pedido
+            actualizar_estado_pedido(pedido_id, "entregado")
+            
+            # Actualizar el mensaje en el grupo para mostrar que se entregó
+            query.edit_message_text(
+                query.message.text + f"\n\n✅ **Entregado a las {datetime.now().strftime('%H:%M')}**",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("✅ ENTREGADO", callback_data="ya_entregado")
+                ]])
+            )
+            
+        except Exception as e:
+            print(f"Error notificando entrega al cliente: {e}")
+            query.answer(f"❌ Error: {str(e)[:50]}", show_alert=True)
+    else:
+        query.answer("❌ Pedido no encontrado", show_alert=True)
+
 # ============ HANDLERS DE FAQ ============
 def faq_menu(update: Update, context: CallbackContext):
     """Menú de FAQ"""
@@ -823,51 +939,6 @@ def feedback_faq(update: Update, context: CallbackContext, util):
         parse_mode='Markdown'
     )
 
-# ============ BOTÓN "PEDIDO EN CAMINO" (COMO EN EL ORIGINAL) ============
-def pedido_en_camino_boton(update: Update, context: CallbackContext, pedido_id):
-    """Botón para notificar que el pedido está en camino"""
-    query = update.callback_query
-    user_id = query.from_user.id
-    
-    # Solo admins pueden usar este botón
-    if not es_admin(user_id):
-        query.answer("❌ Solo para administradores", show_alert=True)
-        return
-    
-    query.answer()
-    
-    # Buscar el pedido en la base de datos
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT user_id FROM pedidos WHERE id = ?", (pedido_id,))
-    res = c.fetchone()
-    conn.close()
-    
-    if res:
-        cliente_id = res[0]
-        try:
-            # Notificar al cliente
-            context.bot.send_message(
-                chat_id=cliente_id, 
-                text=f"🛵 **¡TU PEDIDO #{pedido_id} ESTÁ EN CAMINO!**\n\n"
-                     f"Prepárate, nuestro repartidor llegará pronto.\n"
-                     f"¡Que aproveche! 🤫"
-            )
-            
-            # Actualizar el mensaje en el grupo para mostrar que se notificó
-            query.edit_message_text(
-                query.message.text + f"\n\n✅ **Notificado al cliente a las {datetime.now().strftime('%H:%M')}**",
-                reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("✅ NOTIFICADO", callback_data="ya_notificado")
-                ]])
-            )
-            
-        except Exception as e:
-            print(f"Error notificando al cliente: {e}")
-            query.answer(f"❌ Error: {str(e)[:50]}", show_alert=True)
-    else:
-        query.answer("❌ Pedido no encontrado", show_alert=True)
-
 # ============ HANDLERS DE ADMINISTRADOR ============
 def mostrar_estadisticas_admin(update: Update, context: CallbackContext):
     """Muestra estadísticas del panel admin"""
@@ -925,9 +996,11 @@ def mostrar_pedidos_recientes_admin(update: Update, context: CallbackContext):
         mensaje = "📦 **PEDIDOS RECIENTES**\n\n"
         
         for i, pedido in enumerate(pedidos, 1):
-            estado_icono = "✅" if pedido['estado'] == 'entregado' else "🔄"
+            estado_icono = "✅" if pedido['estado'] == 'entregado' else "🛵" if pedido['estado'] == 'en_camino' else "🔄"
+            estado_texto = "Entregado" if pedido['estado'] == 'entregado' else "En camino" if pedido['estado'] == 'en_camino' else "Pendiente"
+            
             mensaje += (
-                f"{i}. *#{pedido['id']}* {estado_icono}\n"
+                f"{i}. *#{pedido['id']}* {estado_icono} ({estado_texto})\n"
                 f"   👤 {pedido['username']}\n"
                 f"   🍽️ {pedido['productos'][:30]}...\n"
                 f"   💰 {pedido['total']}€ • {pedido['fecha']}\n\n"
@@ -1117,13 +1190,17 @@ def button_handler(update: Update, context: CallbackContext):
         estrellas = int(partes[2])
         procesar_valoracion(update, context, pedido_id, estrellas)
     
-    # Botón "Pedido en camino"
+    # Botones de administración
     elif data.startswith('camino_'):
         pedido_id = int(data.split('_')[1])
         pedido_en_camino_boton(update, context, pedido_id)
     
-    elif data == 'ya_notificado':
-        query.answer("Ya notificado ✓")
+    elif data.startswith('entregado_'):
+        pedido_id = int(data.split('_')[1])
+        pedido_entregado_boton(update, context, pedido_id)
+    
+    elif data in ['ya_camino', 'ya_entregado']:
+        query.answer("Acción ya realizada ✓")
     
     # Administrador
     elif data == 'admin_panel':
@@ -1274,7 +1351,8 @@ def main():
     print(f"🔧 Modo pruebas: {'✅ ACTIVADO' if MODO_PRUEBAS else '❌ DESACTIVADO'}")
     print("✅ Menú de comandos con botones configurado")
     print("✅ Web landing page activa")
-    print("✅ Botón 'Pedido en camino' restaurado")
+    print("✅ Botones 'Pedido en camino' y 'Entregado' activados")
+    print("✅ Sistema de valoración automático tras entrega")
     print("✅ Todas las funcionalidades restaurantes activas")
     print("⏰ Bot listo para recibir pedidos")
     
