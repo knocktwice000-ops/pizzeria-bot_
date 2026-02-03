@@ -15,7 +15,7 @@ print("="*50)
 
 ID_GRUPO_PEDIDOS = "-5151917747"
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
-MODO_PRUEBAS = True  # MODE DEBUG ACTIVADO
+MODO_PRUEBAS = False  # MODE DEBUG ACTIVADO
 URL_PROYECTO = "https://pizzeria-bot-l4y4.onrender.com"
 NOMBRE_BOT_ALIAS = "pizzaioloo_bot"
 
